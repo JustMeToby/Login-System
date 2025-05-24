@@ -1,5 +1,16 @@
 <?php
 session_start();
+
+// HTTP Security Headers
+header("Content-Security-Policy: default-src 'self'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://stackpath.bootstrapcdn.com; style-src 'self' https://stackpath.bootstrapcdn.com 'unsafe-inline'; img-src 'self' data:; font-src 'self' https://stackpath.bootstrapcdn.com;");
+header("X-Content-Type-Options: nosniff");
+header("X-Frame-Options: DENY");
+header("Referrer-Policy: strict-origin-when-cross-origin");
+// header("Strict-Transport-Security: max-age=31536000; includeSubDomains; preload"); // Uncomment if site is HTTPS only
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 $db_path = 'db/users.sqlite';
 $pdo = new PDO('sqlite:' . $db_path);
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -9,9 +20,19 @@ $success_message = '';
 $info_message = ''; // For displaying the reset link
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!isset($_POST['csrf_token']) || !isset($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+        $errors[] = 'Security token validation failed. Please try submitting the form again.';
+    } else {
+        unset($_SESSION['csrf_token']); // Invalidate token after use
+
+        $email = trim($_POST['email'] ?? '');
+
+        if (empty($email)) {
+
     $email = trim($_POST['email'] ?? '');
 
     if (empty($email)) {
+
         $errors[] = 'Email is required.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errors[] = 'Invalid email format.';
@@ -87,6 +108,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <?php if (empty($success_message) && empty($info_message)): // Hide form if messages are shown ?>
             <form id="forgotPasswordForm" method="POST" action="forgot_password.php" novalidate>
+
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
+
                 <div class="form-group">
                     <label for="email">Enter your email address</label>
                     <input type="email" class="form-control" id="email" name="email" required value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>">

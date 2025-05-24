@@ -1,5 +1,18 @@
 <?php
 session_start();
+
+// HTTP Security Headers
+header("Content-Security-Policy: default-src 'self'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://stackpath.bootstrapcdn.com; style-src 'self' https://stackpath.bootstrapcdn.com 'unsafe-inline'; img-src 'self' data:; font-src 'self' https://stackpath.bootstrapcdn.com;");
+header("X-Content-Type-Options: nosniff");
+header("X-Frame-Options: DENY");
+header("Referrer-Policy: strict-origin-when-cross-origin");
+// header("Strict-Transport-Security: max-age=31536000; includeSubDomains; preload"); // Uncomment if site is HTTPS only
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+
 $db_path = 'db/users.sqlite';
 $pdo = new PDO('sqlite:' . $db_path);
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -13,10 +26,21 @@ if (isset($_SESSION['user_id'])) {
 $errors = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!isset($_POST['csrf_token']) || !isset($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+        $errors[] = 'Security token validation failed. Please try submitting the form again.';
+    } else {
+        unset($_SESSION['csrf_token']); // Invalidate token after use
+
+        $login_identifier = trim($_POST['login_identifier'] ?? ''); // Can be username or email
+        $password = $_POST['password'] ?? '';
+
+        if (empty($login_identifier)) {
+
     $login_identifier = trim($_POST['login_identifier'] ?? ''); // Can be username or email
     $password = $_POST['password'] ?? '';
 
     if (empty($login_identifier)) {
+
         $errors[] = 'Username or Email is required.';
     }
     if (empty($password)) {
@@ -67,6 +91,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <?php endif; ?>
 
             <form id="signinForm" method="POST" action="signin.php" novalidate>
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
+
                 <div class="form-group">
                     <label for="login_identifier">Username or Email</label>
                     <input type="text" class="form-control" id="login_identifier" name="login_identifier" required value="<?php echo htmlspecialchars($_POST['login_identifier'] ?? ''); ?>">
