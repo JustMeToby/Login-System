@@ -8,6 +8,7 @@ header("X-Frame-Options: DENY");
 header("Referrer-Policy: strict-origin-when-cross-origin");
 // header("Strict-Transport-Security: max-age=31536000; includeSubDomains; preload"); // Uncomment if site is HTTPS only
 
+
 $db_path = 'db/users.sqlite';
 $pdo = new PDO('sqlite:' . $db_path);
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -33,10 +34,12 @@ if (empty($token)) {
             } else {
                 $show_form = true;
                 $user_id = $user['id']; // Store user_id for update
+
                 // Generate CSRF token only when the form is about to be shown
                 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
                 }
+
             }
         } else {
             $errors[] = 'Invalid password reset token.';
@@ -48,6 +51,7 @@ if (empty($token)) {
 }
 
 if ($show_form && $_SERVER['REQUEST_METHOD'] === 'POST') {
+
     if (!isset($_POST['csrf_token']) || !isset($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         $errors[] = 'Security token validation failed. Please try submitting the form again.';
     } else {
@@ -61,6 +65,16 @@ if ($show_form && $_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $password = $_POST['password'] ?? '';
             $confirm_password = $_POST['confirm_password'] ?? '';
+
+    // Re-verify token from POST to ensure it wasn't tampered with if passed in form
+    $posted_token = $_POST['token'] ?? '';
+    if($posted_token !== $token){
+        $errors[] = 'Token mismatch. Please try the reset process again.';
+        $show_form = false; // Don't show form if tokens don't match
+    } else {
+        $password = $_POST['password'] ?? '';
+        $confirm_password = $_POST['confirm_password'] ?? '';
+
 
         if (empty($password)) {
             $errors[] = 'New password is required.';
@@ -119,8 +133,12 @@ if ($show_form && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <?php if ($show_form): ?>
             <form id="resetPasswordForm" method="POST" action="reset_password.php?token=<?php echo htmlspecialchars($token); ?>" novalidate>
+
                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
                 <input type="hidden" name="url_token" value="<?php echo htmlspecialchars($token); ?>"> <!-- Pass the URL token -->
+
+                <input type="hidden" name="token" value="<?php echo htmlspecialchars($token); ?>">
+
                 <div class="form-group">
                     <label for="password">New Password</label>
                     <input type="password" class="form-control" id="password" name="password" required minlength="8">

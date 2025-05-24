@@ -9,6 +9,7 @@ header("X-Frame-Options: DENY");
 header("Referrer-Policy: strict-origin-when-cross-origin");
 // header("Strict-Transport-Security: max-age=31536000; includeSubDomains; preload"); // Uncomment if site is HTTPS only
 
+
 // Unset all of the session variables.
 $_SESSION = array();
 

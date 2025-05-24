@@ -12,6 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
+
 $db_path = 'db/users.sqlite';
 $pdo = new PDO('sqlite:' . $db_path);
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -34,6 +35,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $password = $_POST['password'] ?? '';
 
         if (empty($login_identifier)) {
+
+    $login_identifier = trim($_POST['login_identifier'] ?? ''); // Can be username or email
+    $password = $_POST['password'] ?? '';
+
+    if (empty($login_identifier)) {
+
         $errors[] = 'Username or Email is required.';
     }
     if (empty($password)) {
@@ -85,6 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <form id="signinForm" method="POST" action="signin.php" novalidate>
                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
+
                 <div class="form-group">
                     <label for="login_identifier">Username or Email</label>
                     <input type="text" class="form-control" id="login_identifier" name="login_identifier" required value="<?php echo htmlspecialchars($_POST['login_identifier'] ?? ''); ?>">

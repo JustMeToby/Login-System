@@ -11,7 +11,6 @@ header("Referrer-Policy: strict-origin-when-cross-origin");
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
-
 $db_path = 'db/users.sqlite';
 $pdo = new PDO('sqlite:' . $db_path);
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -29,6 +28,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $email = trim($_POST['email'] ?? '');
 
         if (empty($email)) {
+
+    $email = trim($_POST['email'] ?? '');
+
+    if (empty($email)) {
+
         $errors[] = 'Email is required.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errors[] = 'Invalid email format.';
@@ -104,7 +108,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <?php if (empty($success_message) && empty($info_message)): // Hide form if messages are shown ?>
             <form id="forgotPasswordForm" method="POST" action="forgot_password.php" novalidate>
+
                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
+
                 <div class="form-group">
                     <label for="email">Enter your email address</label>
                     <input type="email" class="form-control" id="email" name="email" required value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>">
