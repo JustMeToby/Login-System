@@ -35,6 +35,13 @@ if ($userData) {
     $authController->getAndSetFlashMessage('errors', ['Invalid or expired password reset token. Please request a new one.'], true);
     // Do not redirect immediately from here if we want to show this message on reset_password.php itself
     // $authController->redirect('forgot_password.php');
+    if ($auditLogger) {
+        $auditLogger->log(
+            \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_FAILED_INVALID_TOKEN,
+            null,
+            ['token_attempted' => $token]
+        );
+    }
 }
 
 
@@ -47,43 +54,79 @@ if ($show_form && $_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($posted_url_token !== $token) {
             $errors[] = 'Password reset token mismatch. Please try the reset process again from the link in your email.';
             $show_form = false; // Don't show form if tokens don't match
+            if ($auditLogger && $user_id_for_reset) { // user_id_for_reset might be known if initial token was valid but form token differs
+                 $auditLogger->log(
+                    \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_FAILED_INVALID_TOKEN,
+                    $user_id_for_reset,
+                    ['reason' => 'Form token mismatch with URL token.', 'url_token' => $token, 'form_token' => $posted_url_token]
+                );
+            } elseif ($auditLogger) {
+                 $auditLogger->log(
+                    \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_FAILED_INVALID_TOKEN,
+                    null,
+                    ['reason' => 'Form token mismatch with URL token (user ID not resolved).', 'url_token' => $token, 'form_token' => $posted_url_token]
+                );
+            }
         } else {
             $password = $_POST['password'] ?? '';
             $confirm_password = $_POST['confirm_password'] ?? '';
+            
+            $policyErrors = []; // For specific policy errors
 
             if (empty($password)) {
                 $errors[] = 'New password is required.';
-            } elseif (strlen($password) < 8) {
-                $errors[] = 'Password must be at least 8 characters long.';
-            }
-            if ($password !== $confirm_password) {
+            } elseif ($password !== $confirm_password) {
                 $errors[] = 'Passwords do not match.';
+            } else {
+                // Passwords are not empty and match, now check policy
+                $passwordPolicyService = new \LoginSystem\Security\PasswordPolicyService();
+                $policyErrors = $passwordPolicyService->validatePassword($password);
+                if (!empty($policyErrors)) {
+                    $errors = array_merge($errors, $policyErrors);
+                }
             }
 
             if (empty($errors) && $user_id_for_reset) {
+                // $user->updatePassword will log EVENT_PASSWORD_CHANGE_SUCCESS or EVENT_PASSWORD_CHANGE_FAILED (on DB error)
                 if ($user->updatePassword($user_id_for_reset, $password)) {
-                    if ($auditLogger) { // $auditLogger is globally available
-                        $auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_SUCCESS, $user_id_for_reset);
+                    if ($auditLogger && $userData) { // $userData has user info from valid token
+                        $auditLogger->log(
+                            \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_SUCCESS,
+                            $user_id_for_reset,
+                            ['email' => $userData['email']] 
+                        );
                     }
-                    $user->clearResetToken($user_id_for_reset); // Clear token after successful reset
-                    // Note: The link in the flash message was already updated to use buildUrl(PAGE_SIGNIN) in a previous subtask (Turn 37).
-                    // We'll ensure that structure is maintained.
-                    $signInUrl = $authController->buildUrl(PAGE_SIGNIN); // Rebuild for clarity if needed, or use existing.
+                    $user->clearResetToken($user_id_for_reset); 
+                    $signInUrl = $authController->buildUrl(PAGE_SIGNIN); 
                     $authController->getAndSetFlashMessage('success', "Your password has been successfully reset! You can now <a href='{$signInUrl}'>sign in</a>.");
-                    $show_form = false; // Hide form on success
-                    // Redirect to signin page after successful password reset
+                    $show_form = false; 
                     $authController->redirect(PAGE_SIGNIN);
-
                 } else {
-                    $errors[] = 'An error occurred while resetting your password. Please try again.';
-                    // Error is logged by User class
+                    // User::updatePassword logs its own failures if they are due to DB or hashing.
+                    // If updatePassword returns false for other reasons not logged by itself, add a generic error.
+                    // However, the current updatePassword logs all its failure paths.
+                    // If we reach here, it means updatePassword itself failed and logged it.
+                    // We might want to still add a generic error for the user.
+                    if (empty($errors)) { // Avoid duplicating errors if policy check already added some.
+                         // $errors[] = 'An error occurred while resetting your password. Please try again.';
+                         // User::updatePassword already logs EVENT_PASSWORD_CHANGE_FAILED.
+                    }
+                }
+            } elseif (!empty($policyErrors) && $user_id_for_reset) { 
+                // This condition specifically handles logging for policy violations that prevented updatePassword call.
+                if ($auditLogger) {
+                    $auditLogger->log(
+                        \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_CHANGE_FAILED,
+                        $user_id_for_reset,
+                        ['reason' => 'Password policy violation during reset.', 'policy_errors' => $policyErrors, 'token_used' => $token]
+                    );
                 }
             }
         }
     }
-    if(!empty($errors)){
+    // This will catch errors from CSRF, token mismatch, or password validation (including policy)
+    if(!empty($errors)){ 
         $authController->getAndSetFlashMessage('errors', $errors, true);
-        // Redirect back to the reset_password page with the token to show errors
         $authController->redirect(PAGE_RESET_PASSWORD, 'token=' . urlencode($token));
     }
 }

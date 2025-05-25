@@ -26,6 +26,7 @@ define('PAGE_DASHBOARD', 'dashboard.php');
 define('PAGE_LOGOUT', 'logout.php');
 define('PAGE_FORGOT_PASSWORD', 'forgot_password.php');
 define('PAGE_RESET_PASSWORD', 'reset_password.php'); // Used to build the reset link
+define('PAGE_VERIFY_EMAIL', 'verify_email.php'); // Page to handle email verification
 
 // **Admin Account Configuration**
 // Default administrator account details

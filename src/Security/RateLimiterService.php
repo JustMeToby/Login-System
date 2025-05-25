@@ -3,299 +3,339 @@
 namespace LoginSystem\Security;
 
 use PDO;
+use LoginSystem\Logging\AuditLoggerService; // Corrected import
 
 class RateLimiterService {
     private PDO $pdo;
-    private ?\LoginSystem\Logging\AuditLoggerService $auditLogger = null;
+    private ?AuditLoggerService $auditLogger = null; // Corrected type hint
 
-    // Constants for attempt types - can be expanded
-    const TYPE_IP_LOGIN = 'ip_login';
-    const TYPE_USER_LOGIN = 'user_login';
-    const TYPE_IP_RESET_REQUEST = 'ip_reset_request';
-    // Add more types as needed, e.g., TYPE_USER_EMAIL_VERIFICATION_REQUEST
-
-    public function __construct(PDO $pdo, ?\LoginSystem\Logging\AuditLoggerService $auditLogger = null) {
+    public function __construct(PDO $pdo, ?AuditLoggerService $auditLogger = null) {
         $this->pdo = $pdo;
         $this->auditLogger = $auditLogger;
     }
 
     /**
-     * Checks if a given identifier (IP or user ID) is currently blocked for a specific attempt type.
-     * It also clears expired attempts before checking.
+     * Checks if an IP address is allowed to make further login attempts.
      *
-     * @param string $identifier The IP address or user ID.
-     * @param string $attemptType The type of attempt (e.g., self::TYPE_IP_LOGIN).
-     * @return bool True if blocked, false otherwise.
+     * @param string $ipAddress The IP address to check.
+     * @return bool True if attempts are allowed, false if locked out.
      */
-    public function isBlocked(string $identifier, string $attemptType): bool {
-        $this->clearExpiredAttempts($identifier, $attemptType);
-
-        $configMaxAttempts = 0;
-        $configLockoutSeconds = 0;
-        $configAttemptValiditySeconds = ATTEMPT_COUNT_VALIDITY_SECONDS; // General validity for counting attempts
-
-        switch ($attemptType) {
-            case self::TYPE_IP_LOGIN:
-                $configMaxAttempts = MAX_IP_LOGIN_ATTEMPTS;
-                $configLockoutSeconds = IP_LOCKOUT_SECONDS;
-                $table = 'login_attempts';
-                $field = 'ip_address';
-                break;
-            case self::TYPE_USER_LOGIN:
-                $configMaxAttempts = MAX_USER_LOGIN_ATTEMPTS;
-                $configLockoutSeconds = USER_LOCKOUT_SECONDS;
-                $table = 'user_specific_attempts';
-                $field = 'user_id'; // Assuming identifier is user_id for this type
-                break;
-            case self::TYPE_IP_RESET_REQUEST:
-                $configMaxAttempts = MAX_RESET_PASSWORD_ATTEMPTS_PER_IP;
-                $configLockoutSeconds = RESET_PASSWORD_IP_LOCKOUT_SECONDS;
-                $table = 'login_attempts'; // Or a dedicated table if IP reset attempts are tracked differently
-                $field = 'ip_address';
-                 // Reset password attempts might have a longer validity or just rely on lockout
-                $configAttemptValiditySeconds = $configLockoutSeconds; // Example: attempts count for the duration of lockout
-                break;
-            default:
-                return false; // Unknown attempt type
-        }
-
-        $sql = "SELECT attempts_count, last_attempt_at FROM {$table} WHERE {$field} = :identifier";
-        if ($table === 'user_specific_attempts') {
-            $sql .= " AND attempt_type = :attempt_type_condition";
-        }
-        
+    public function checkIpLoginAttempts(string $ipAddress): bool {
+        $sql = "SELECT attempts_count, last_attempt_at FROM login_attempts WHERE ip_address = :ip_address";
         $stmt = $this->pdo->prepare($sql);
-        $params = [':identifier' => $identifier];
-        if ($table === 'user_specific_attempts') {
-            $params[':attempt_type_condition'] = $attemptType;
-        }
-        $stmt->execute($params);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmt->execute([':ip_address' => $ipAddress]);
+        $record = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($row) {
-            // Check if currently within a lockout period from a previous max attempt breach
-            if ($row['attempts_count'] >= $configMaxAttempts && (time() - $row['last_attempt_at']) < $configLockoutSeconds) {
-                return true; // Still in lockout from exceeding max attempts
-            }
-            // Check if non-locked out attempts are still high but recent enough to count
-            // This logic might be complex if we distinguish between "counting window" and "lockout window" strictly.
-            // For simplicity here: if attempts are high, and the last one was recent enough to trigger a new lockout, consider it blocked.
-            // The clearExpiredAttempts should handle attempts older than ATTEMPT_COUNT_VALIDITY_SECONDS if not locked out.
-            if ($row['attempts_count'] >= $configMaxAttempts) {
-                 // If max attempts reached, they are blocked until lockout period from last attempt passes
-                 return (time() - $row['last_attempt_at']) < $configLockoutSeconds;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Records an attempt for a given identifier and type.
-     *
-     * @param string $identifier The IP address or user ID.
-     * @param string $attemptType The type of attempt.
-     */
-    public function recordAttempt(string $identifier, string $attemptType): void {
-        $this->clearExpiredAttempts($identifier, $attemptType); // Clean up before recording new one
-
-        $table = '';
-        $field = '';
         $currentTime = time();
 
-        switch ($attemptType) {
-            case self::TYPE_IP_LOGIN:
-                $table = 'login_attempts';
-                $field = 'ip_address';
-                break;
-            case self::TYPE_USER_LOGIN:
-                $table = 'user_specific_attempts';
-                $field = 'user_id';
-                break;
-            case self::TYPE_IP_RESET_REQUEST:
-                $table = 'login_attempts'; // Or dedicated table
-                $field = 'ip_address';
-                break;
-            default:
-                return; // Unknown attempt type
-        }
+        if ($record) {
+            $lastAttemptTime = (int)$record['last_attempt_at'];
+            $attemptsCount = (int)$record['attempts_count'];
 
-        $sqlSelect = "SELECT attempts_count, last_attempt_at FROM {$table} WHERE {$field} = :identifier";
-        if ($table === 'user_specific_attempts') {
-            $sqlSelect .= " AND attempt_type = :attempt_type_condition";
-        }
+            // Check for active lockout
+            if ($attemptsCount >= MAX_IP_LOGIN_ATTEMPTS && ($currentTime - $lastAttemptTime) < IP_LOCKOUT_SECONDS) {
+                return false; // Locked out
+            }
 
+            // Check if lockout has expired
+            if ($attemptsCount >= MAX_IP_LOGIN_ATTEMPTS && ($currentTime - $lastAttemptTime) >= IP_LOCKOUT_SECONDS) {
+                $this->clearIpLoginAttempts($ipAddress); // Lockout expired, clear and allow
+                return true;
+            }
+
+            // Check if attempts are stale (older than ATTEMPT_COUNT_VALIDITY_SECONDS)
+            if (($currentTime - $lastAttemptTime) > ATTEMPT_COUNT_VALIDITY_SECONDS) {
+                $this->clearIpLoginAttempts($ipAddress); // Stale attempts, clear and allow
+                return true;
+            }
+        }
+        return true; // No record or conditions not met for lockout/staleness
+    }
+
+    /**
+     * Records a login attempt for an IP address.
+     *
+     * @param string $ipAddress The IP address making the attempt.
+     */
+    public function recordIpLoginAttempt(string $ipAddress): void {
+        $sqlSelect = "SELECT attempts_count, last_attempt_at FROM login_attempts WHERE ip_address = :ip_address";
         $stmtSelect = $this->pdo->prepare($sqlSelect);
-        $paramsSelect = [':identifier' => $identifier];
-        if ($table === 'user_specific_attempts') {
-            $paramsSelect[':attempt_type_condition'] = $attemptType;
-        }
-        $stmtSelect->execute($paramsSelect);
-        $row = $stmtSelect->fetch(PDO::FETCH_ASSOC);
+        $stmtSelect->execute([':ip_address' => $ipAddress]);
+        $record = $stmtSelect->fetch(PDO::FETCH_ASSOC);
 
+        $currentTime = time();
         $newAttemptsCount = 1;
-        if ($row) {
-            // If last attempt was outside ATTEMPT_COUNT_VALIDITY_SECONDS, reset count, unless it's a lockout scenario
-            // This logic is simplified: clearExpiredAttempts handles older, non-locking attempts.
-            // Here, we just increment.
-            $newAttemptsCount = $row['attempts_count'] + 1;
+
+        if ($record) {
+            $lastAttemptTime = (int)$record['last_attempt_at'];
+            $currentAttemptsCount = (int)$record['attempts_count'];
+
+            // If last attempt is within validity window, increment count. Otherwise, it's a fresh first attempt.
+            if (($currentTime - $lastAttemptTime) <= ATTEMPT_COUNT_VALIDITY_SECONDS) {
+                // Check if current attempt count would be for an already expired lockout, then reset
+                if ($currentAttemptsCount >= MAX_IP_LOGIN_ATTEMPTS && ($currentTime - $lastAttemptTime) >= IP_LOCKOUT_SECONDS) {
+                    $newAttemptsCount = 1; // Lockout expired, this is a new first attempt
+                } else {
+                    $newAttemptsCount = $currentAttemptsCount + 1;
+                }
+            } else {
+                 // Stale attempts, so reset to 1
+                $newAttemptsCount = 1;
+            }
         }
 
-        $paramsUpsert = [
-            ':identifier' => $identifier,
+        $sqlUpsert = "INSERT INTO login_attempts (ip_address, last_attempt_at, attempts_count)
+                      VALUES (:ip_address, :last_attempt_at, :attempts_count)
+                      ON CONFLICT(ip_address) DO UPDATE SET
+                      last_attempt_at = :last_attempt_at, attempts_count = :attempts_count";
+        $stmtUpsert = $this->pdo->prepare($sqlUpsert);
+        $stmtUpsert->execute([
+            ':ip_address' => $ipAddress,
             ':last_attempt_at' => $currentTime,
             ':attempts_count' => $newAttemptsCount
-        ];
+        ]);
 
-        if ($table === 'user_specific_attempts') {
-            $sqlUpsert = "INSERT INTO user_specific_attempts (user_id, attempt_type, last_attempt_at, attempts_count)
-                          VALUES (:identifier, :attempt_type_upsert, :last_attempt_at, :attempts_count)
-                          ON CONFLICT(user_id, attempt_type) DO UPDATE SET
-                          last_attempt_at = :last_attempt_at, attempts_count = :attempts_count";
-            $paramsUpsert[':attempt_type_upsert'] = $attemptType;
-        } else { // login_attempts (IP based)
-             $sqlUpsert = "INSERT INTO login_attempts (ip_address, last_attempt_at, attempts_count)
-                          VALUES (:identifier, :last_attempt_at, :attempts_count)
-                          ON CONFLICT(ip_address) DO UPDATE SET
-                          last_attempt_at = :last_attempt_at, attempts_count = :attempts_count";
+        if ($this->auditLogger && $newAttemptsCount === MAX_IP_LOGIN_ATTEMPTS) {
+            $this->auditLogger->log(
+                AuditLoggerService::EVENT_ACCOUNT_LOCKED_IP, // Corrected Event Name
+                null, // userId is null for IP based events
+                ['ip_address' => $ipAddress, 'attempts' => $newAttemptsCount]
+            );
         }
-        
+    }
+
+    /**
+     * Clears all login attempts for a given IP address.
+     *
+     * @param string $ipAddress The IP address to clear.
+     */
+    public function clearIpLoginAttempts(string $ipAddress): void {
+        $sql = "DELETE FROM login_attempts WHERE ip_address = :ip_address";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([':ip_address' => $ipAddress]);
+    }
+
+    /**
+     * Checks if a user account is allowed to make further login attempts.
+     *
+     * @param int $userId The ID of the user to check.
+     * @return bool True if attempts are allowed, false if locked out.
+     */
+    public function checkUserLoginAttempts(int $userId): bool {
+        $sql = "SELECT attempts_count, last_attempt_at FROM user_specific_attempts 
+                WHERE user_id = :user_id AND attempt_type = 'login'";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([':user_id' => $userId]);
+        $record = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $currentTime = time();
+
+        if ($record) {
+            $lastAttemptTime = (int)$record['last_attempt_at'];
+            $attemptsCount = (int)$record['attempts_count'];
+
+            // Check for active lockout
+            if ($attemptsCount >= MAX_USER_LOGIN_ATTEMPTS && ($currentTime - $lastAttemptTime) < USER_LOCKOUT_SECONDS) {
+                return false; // Locked out
+            }
+
+            // Check if lockout has expired
+            if ($attemptsCount >= MAX_USER_LOGIN_ATTEMPTS && ($currentTime - $lastAttemptTime) >= USER_LOCKOUT_SECONDS) {
+                $this->clearUserLoginAttempts($userId); // Lockout expired, clear and allow
+                return true;
+            }
+
+            // Check if attempts are stale
+            if (($currentTime - $lastAttemptTime) > ATTEMPT_COUNT_VALIDITY_SECONDS) {
+                $this->clearUserLoginAttempts($userId); // Stale attempts, clear and allow
+                return true;
+            }
+        }
+        return true; // No record or conditions not met for lockout/staleness
+    }
+
+    /**
+     * Records a login attempt for a user account.
+     *
+     * @param int $userId The ID of the user making the attempt.
+     */
+    public function recordUserLoginAttempt(int $userId): void {
+        $sqlSelect = "SELECT attempts_count, last_attempt_at FROM user_specific_attempts 
+                      WHERE user_id = :user_id AND attempt_type = 'login'";
+        $stmtSelect = $this->pdo->prepare($sqlSelect);
+        $stmtSelect->execute([':user_id' => $userId]);
+        $record = $stmtSelect->fetch(PDO::FETCH_ASSOC);
+
+        $currentTime = time();
+        $newAttemptsCount = 1;
+        $attemptType = 'login';
+
+        if ($record) {
+            $lastAttemptTime = (int)$record['last_attempt_at'];
+            $currentAttemptsCount = (int)$record['attempts_count'];
+
+            if (($currentTime - $lastAttemptTime) <= ATTEMPT_COUNT_VALIDITY_SECONDS) {
+                 // Check if current attempt count would be for an already expired lockout, then reset
+                if ($currentAttemptsCount >= MAX_USER_LOGIN_ATTEMPTS && ($currentTime - $lastAttemptTime) >= USER_LOCKOUT_SECONDS) {
+                    $newAttemptsCount = 1; // Lockout expired, this is a new first attempt
+                } else {
+                    $newAttemptsCount = $currentAttemptsCount + 1;
+                }
+            } else {
+                // Stale attempts, so reset to 1
+                $newAttemptsCount = 1;
+            }
+        }
+
+        $sqlUpsert = "INSERT INTO user_specific_attempts (user_id, attempt_type, last_attempt_at, attempts_count)
+                      VALUES (:user_id, :attempt_type, :last_attempt_at, :attempts_count)
+                      ON CONFLICT(user_id, attempt_type) DO UPDATE SET
+                      last_attempt_at = :last_attempt_at, attempts_count = :attempts_count";
         $stmtUpsert = $this->pdo->prepare($sqlUpsert);
-        $stmtUpsert->execute($paramsUpsert);
+        $stmtUpsert->execute([
+            ':user_id' => $userId,
+            ':attempt_type' => $attemptType,
+            ':last_attempt_at' => $currentTime,
+            ':attempts_count' => $newAttemptsCount
+        ]);
 
-        // Log event if this attempt causes a lockout
-        $currentConfigMaxAttempts = 0;
-        switch ($attemptType) {
-            case self::TYPE_IP_LOGIN: $currentConfigMaxAttempts = MAX_IP_LOGIN_ATTEMPTS; break;
-            case self::TYPE_USER_LOGIN: $currentConfigMaxAttempts = MAX_USER_LOGIN_ATTEMPTS; break;
-            case self::TYPE_IP_RESET_REQUEST: $currentConfigMaxAttempts = MAX_RESET_PASSWORD_ATTEMPTS_PER_IP; break;
-        }
-
-        if ($this->auditLogger && $currentConfigMaxAttempts > 0 && $newAttemptsCount === $currentConfigMaxAttempts) {
-            $logEventType = null;
-            $logDetails = ['identifier' => $identifier, 'type' => $attemptType, 'count' => $newAttemptsCount];
-            $userIdToLog = null;
-
-            if ($attemptType === self::TYPE_IP_LOGIN) {
-                $logEventType = \LoginSystem\Logging\AuditLoggerService::EVENT_ACCOUNT_LOCKED_IP;
-                // For IP lock, $identifier is the IP, $userIdToLog remains null unless we can associate it
-            } elseif ($attemptType === self::TYPE_USER_LOGIN) {
-                $logEventType = \LoginSystem\Logging\AuditLoggerService::EVENT_ACCOUNT_LOCKED_USER;
-                $userIdToLog = (int)$identifier; // Assuming $identifier is user_id for this type
-                $logDetails['user_id'] = $userIdToLog;
-            } elseif ($attemptType === self::TYPE_IP_RESET_REQUEST) {
-                $logEventType = \LoginSystem\Logging\AuditLoggerService::EVENT_IP_LOCKED_RESET;
-                // For IP reset lock, $identifier is the IP
-            }
-            
-            if ($logEventType) {
-                $this->auditLogger->log($logEventType, $userIdToLog, $logDetails);
-            }
+        if ($this->auditLogger && $newAttemptsCount === MAX_USER_LOGIN_ATTEMPTS) {
+            $this->auditLogger->log(
+                AuditLoggerService::EVENT_ACCOUNT_LOCKED_USER, // Corrected Event Name
+                $userId,
+                ['user_id' => $userId, 'attempts' => $newAttemptsCount]
+            );
         }
     }
 
     /**
-     * Clears attempts for a given identifier and type. Typically called on successful action.
+     * Clears all login attempts for a given user account.
      *
-     * @param string $identifier The IP address or user ID.
-     * @param string $attemptType The type of attempt.
+     * @param int $userId The ID of the user to clear.
      */
-    public function clearAttempts(string $identifier, string $attemptType): void {
-        $table = '';
-        $field = '';
-        switch ($attemptType) {
-            case self::TYPE_IP_LOGIN:
-                $table = 'login_attempts';
-                $field = 'ip_address';
-                break;
-            case self::TYPE_USER_LOGIN:
-                $table = 'user_specific_attempts';
-                $field = 'user_id';
-                break;
-            case self::TYPE_IP_RESET_REQUEST:
-                // Typically, reset request attempts might not be cleared immediately on one success,
-                // but rather expire or get cleared if a global lockout for that IP is lifted.
-                // For now, let's make it clearable.
-                $table = 'login_attempts'; // Or dedicated table
-                $field = 'ip_address';
-                break;
-            default:
-                return; // Unknown attempt type
-        }
-
-        $sql = "DELETE FROM {$table} WHERE {$field} = :identifier";
-        if ($table === 'user_specific_attempts') {
-            $sql .= " AND attempt_type = :attempt_type_condition";
-        }
-        
+    public function clearUserLoginAttempts(int $userId): void {
+        $sql = "DELETE FROM user_specific_attempts WHERE user_id = :user_id AND attempt_type = 'login'";
         $stmt = $this->pdo->prepare($sql);
-        $params = [':identifier' => $identifier];
-        if ($table === 'user_specific_attempts') {
-            $params[':attempt_type_condition'] = $attemptType;
+        $stmt->execute([':user_id' => $userId]);
+    }
+
+    // Constants for password reset IP tracking
+    private const string ATTEMPT_TYPE_PASSWORD_RESET_IP = 'password_reset_ip';
+    private const int USER_ID_FOR_IP_ACTIONS = 0; // Using user_id 0 for IP-specific actions not tied to a real user
+
+    /**
+     * Checks if an IP address is allowed to make further password reset requests.
+     *
+     * @param string $ipAddress The IP address to check.
+     * @return bool True if requests are allowed, false if locked out.
+     */
+    public function checkPasswordResetIpAttempts(string $ipAddress): bool {
+        $sql = "SELECT attempts_count, last_attempt_at FROM user_specific_attempts 
+                WHERE user_id = :user_id AND attempt_type = :attempt_type";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([
+            ':user_id' => self::USER_ID_FOR_IP_ACTIONS,
+            ':attempt_type' => self::ATTEMPT_TYPE_PASSWORD_RESET_IP
+        ]);
+        $record = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $currentTime = time();
+
+        if ($record) {
+            $lastAttemptTime = (int)$record['last_attempt_at'];
+            $attemptsCount = (int)$record['attempts_count'];
+
+            // Check for active lockout
+            if ($attemptsCount >= MAX_RESET_PASSWORD_ATTEMPTS_PER_IP && ($currentTime - $lastAttemptTime) < RESET_PASSWORD_IP_LOCKOUT_SECONDS) {
+                return false; // Locked out
+            }
+
+            // Check if lockout has expired
+            if ($attemptsCount >= MAX_RESET_PASSWORD_ATTEMPTS_PER_IP && ($currentTime - $lastAttemptTime) >= RESET_PASSWORD_IP_LOCKOUT_SECONDS) {
+                $this->clearPasswordResetIpAttempts($ipAddress); // Lockout expired, clear and allow
+                return true;
+            }
+
+            // Check if attempts are stale (using general ATTEMPT_COUNT_VALIDITY_SECONDS for now)
+            // Consider if a different validity window is needed for password resets
+            if (($currentTime - $lastAttemptTime) > ATTEMPT_COUNT_VALIDITY_SECONDS) {
+                $this->clearPasswordResetIpAttempts($ipAddress); // Stale attempts, clear and allow
+                return true;
+            }
         }
-        $stmt->execute($params);
+        return true; // No record or conditions not met for lockout/staleness
     }
 
     /**
-     * Clears attempts that are older than the defined validity window,
-     * UNLESS they are part of an active lockout.
+     * Records a password reset request attempt for an IP address.
      *
-     * @param string $identifier
-     * @param string $attemptType
+     * @param string $ipAddress The IP address making the attempt.
      */
-    private function clearExpiredAttempts(string $identifier, string $attemptType): void {
-        $table = '';
-        $field = '';
-        $configMaxAttempts = 0;
-        $configLockoutSeconds = 0;
-        $configAttemptValiditySeconds = ATTEMPT_COUNT_VALIDITY_SECONDS;
+    public function recordPasswordResetIpAttempt(string $ipAddress): void {
+        $sqlSelect = "SELECT attempts_count, last_attempt_at FROM user_specific_attempts 
+                      WHERE user_id = :user_id AND attempt_type = :attempt_type";
+        $stmtSelect = $this->pdo->prepare($sqlSelect);
+        $stmtSelect->execute([
+            ':user_id' => self::USER_ID_FOR_IP_ACTIONS,
+            ':attempt_type' => self::ATTEMPT_TYPE_PASSWORD_RESET_IP
+        ]);
+        $record = $stmtSelect->fetch(PDO::FETCH_ASSOC);
 
-        switch ($attemptType) {
-            case self::TYPE_IP_LOGIN:
-                $table = 'login_attempts';
-                $field = 'ip_address';
-                $configMaxAttempts = MAX_IP_LOGIN_ATTEMPTS;
-                $configLockoutSeconds = IP_LOCKOUT_SECONDS;
-                break;
-            case self::TYPE_USER_LOGIN:
-                $table = 'user_specific_attempts';
-                $field = 'user_id';
-                $configMaxAttempts = MAX_USER_LOGIN_ATTEMPTS;
-                $configLockoutSeconds = USER_LOCKOUT_SECONDS;
-                break;
-            case self::TYPE_IP_RESET_REQUEST:
-                $table = 'login_attempts';
-                $field = 'ip_address';
-                $configMaxAttempts = MAX_RESET_PASSWORD_ATTEMPTS_PER_IP;
-                $configLockoutSeconds = RESET_PASSWORD_IP_LOCKOUT_SECONDS;
-                $configAttemptValiditySeconds = $configLockoutSeconds; // Attempts count for lockout duration
-                break;
-            default:
-                return;
+        $currentTime = time();
+        $newAttemptsCount = 1;
+
+        if ($record) {
+            $lastAttemptTime = (int)$record['last_attempt_at'];
+            $currentAttemptsCount = (int)$record['attempts_count'];
+
+            // If last attempt is within validity window, increment. Otherwise, it's a fresh first attempt.
+            if (($currentTime - $lastAttemptTime) <= ATTEMPT_COUNT_VALIDITY_SECONDS) {
+                // Check if current attempt count would be for an already expired lockout, then reset
+                if ($currentAttemptsCount >= MAX_RESET_PASSWORD_ATTEMPTS_PER_IP && ($currentTime - $lastAttemptTime) >= RESET_PASSWORD_IP_LOCKOUT_SECONDS) {
+                    $newAttemptsCount = 1; // Lockout expired, this is a new first attempt
+                } else {
+                    $newAttemptsCount = $currentAttemptsCount + 1;
+                }
+            } else {
+                // Stale attempts, so reset to 1
+                $newAttemptsCount = 1;
+            }
         }
 
-        $sql = "DELETE FROM {$table} WHERE {$field} = :identifier 
-                AND (
-                    -- Condition 1: attempts are below max AND older than counting validity window
-                    (attempts_count < :max_attempts AND (CAST(strftime('%s', 'now') AS INTEGER) - last_attempt_at) > :attempt_validity_seconds)
-                    OR
-                    -- Condition 2: attempts reached max (locked out) BUT lockout period has passed
-                    (attempts_count >= :max_attempts AND (CAST(strftime('%s', 'now') AS INTEGER) - last_attempt_at) > :lockout_seconds)
-                )";
-        
-        $params = [
-            ':identifier' => $identifier,
-            ':max_attempts' => $configMaxAttempts,
-            ':attempt_validity_seconds' => $configAttemptValiditySeconds,
-            ':lockout_seconds' => $configLockoutSeconds
-        ];
+        $sqlUpsert = "INSERT INTO user_specific_attempts (user_id, attempt_type, last_attempt_at, attempts_count)
+                      VALUES (:user_id, :attempt_type, :last_attempt_at, :attempts_count)
+                      ON CONFLICT(user_id, attempt_type) DO UPDATE SET
+                      last_attempt_at = :last_attempt_at, attempts_count = :attempts_count";
+        $stmtUpsert = $this->pdo->prepare($sqlUpsert);
+        $stmtUpsert->execute([
+            ':user_id' => self::USER_ID_FOR_IP_ACTIONS,
+            ':attempt_type' => self::ATTEMPT_TYPE_PASSWORD_RESET_IP,
+            ':last_attempt_at' => $currentTime,
+            ':attempts_count' => $newAttemptsCount
+        ]);
 
-        if ($table === 'user_specific_attempts') {
-            $sql .= " AND attempt_type = :attempt_type_condition";
-            $params[':attempt_type_condition'] = $attemptType;
+        if ($this->auditLogger && $newAttemptsCount === MAX_RESET_PASSWORD_ATTEMPTS_PER_IP) {
+            $this->auditLogger->log(
+                AuditLoggerService::EVENT_PASSWORD_RESET_IP_LOCKOUT,
+                null, // No specific user for this IP-based event
+                ['ip_address' => $ipAddress, 'attempts' => $newAttemptsCount]
+            );
         }
-        
+    }
+
+    /**
+     * Clears all password reset attempts for a given IP address.
+     *
+     * @param string $ipAddress The IP address to clear.
+     */
+    public function clearPasswordResetIpAttempts(string $ipAddress): void {
+        $sql = "DELETE FROM user_specific_attempts 
+                WHERE user_id = :user_id AND attempt_type = :attempt_type";
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
+        $stmt->execute([
+            ':user_id' => self::USER_ID_FOR_IP_ACTIONS,
+            ':attempt_type' => self::ATTEMPT_TYPE_PASSWORD_RESET_IP
+        ]);
     }
 }
 
