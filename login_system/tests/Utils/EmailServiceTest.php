@@ -11,6 +11,10 @@ class EmailServiceTest extends TestCase
      */
     public function testSendVerificationEmailSuccess()
     {
+        if (!is_executable('/usr/sbin/sendmail')) {
+            $this->markTestSkipped('Sendmail is not available, skipping EmailServiceTest.');
+        }
+
         // This test is limited because mocking global functions like mail() is complex
         // without specific libraries (e.g., php-mock) or refactoring EmailService.
         // Here, we are primarily testing that the method executes and returns true,

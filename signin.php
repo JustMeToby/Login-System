@@ -6,7 +6,7 @@
  * validates user credentials, implements IP and user-based rate limiting,
  * and manages session/login state using services from bootstrap.php.
  */
-require_once 'src/bootstrap.php'; // Defines $authController, $user, $security, $rateLimiter
+require_once 'login_system/src/bootstrap.php'; // Defines $authController, $user, $security, $rateLimiter
 
 // A more robust IP getter could be moved to a utility function later
 $clientIp = $_SERVER['REMOTE_ADDR'] ?? 'unknown'; // Fallback for CLI or misconfigured server
@@ -16,142 +16,12 @@ $authController->requireGuest();
 $errors = []; 
 $login_identifier_value = ''; // To repopulate form field
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $login_identifier = trim($_POST['login_identifier'] ?? ''); // Get identifier for logging early
-    $password = $_POST['password'] ?? ''; // Get password for logging early if needed
+// The POST request handling logic is now in handle_signin.php
+require_once 'login_system/includes/handle_signin.php';
 
-    // ** Check IP Rate Limit First **
-    if (!$rateLimiter->checkIpLoginAttempts($clientIp)) {
-        // IP is locked out
-        $auditLogger->log(
-            \LoginSystem\Logging\AuditLoggerService::EVENT_LOGIN_FAILED_IP_LOCKOUT,
-            null,
-            ['ip_address' => $clientIp, 'username_attempted' => $login_identifier]
-        );
-        $authController->getAndSetFlashMessage('errors', ["Too many login attempts from your IP address. Please try again later."], true);
-        $authController->redirect(PAGE_SIGNIN); // redirect() handles exit
-    }
-
-    if (!$security->verifyCsrfToken($_POST[CSRF_TOKEN_NAME] ?? '')) {
-        $errors[] = 'Security token validation failed. Please try submitting the form again.';
-        // Even for CSRF fail, we count it against the IP as an attempt to probe the system
-        $rateLimiter->recordIpLoginAttempt($clientIp);
-        $auditLogger->log(
-            \LoginSystem\Logging\AuditLoggerService::EVENT_USER_LOGIN_FAILURE, // Generic failure for CSRF
-            null,
-            ['ip_address' => $clientIp, 'username_attempted' => $login_identifier, 'reason' => 'CSRF token validation failed']
-        );
-        $authController->getAndSetFlashMessage('errors', $errors, true);
-        $authController->redirect(PAGE_SIGNIN);
-    }
-    // Optional: unset($_SESSION[CSRF_TOKEN_NAME]); // If you want one-time CSRF for login
-
-    $login_identifier_value = $security->escapeHTML($login_identifier);
-
-    if (empty($login_identifier)) {
-        $errors[] = 'Username or Email is required.';
-    }
-    if (empty($password)) {
-        $errors[] = 'Password is required.';
-    }
-
-    if (!empty($errors)) { // Input validation failed (e.g., empty fields)
-        // Record IP attempt for validation failure as well
-        $rateLimiter->recordIpLoginAttempt($clientIp);
-        $auditLogger->log(
-            \LoginSystem\Logging\AuditLoggerService::EVENT_USER_LOGIN_FAILURE, // Generic failure
-            null,
-            ['ip_address' => $clientIp, 'username_attempted' => $login_identifier, 'reason' => 'Empty username or password fields.']
-        );
-        $authController->getAndSetFlashMessage('errors', $errors, true);
-        $authController->redirect(PAGE_SIGNIN);
-    }
-
-    // At this point, input fields are non-empty, and CSRF was valid. IP is not initially locked out.
-    $userData = $user->findByLogin($login_identifier);
-
-    if ($userData) {
-        // User found, now check user-specific rate limit before checking password
-        if (!$rateLimiter->checkUserLoginAttempts($userData['id'])) {
-            // User account is locked out
-            $rateLimiter->recordIpLoginAttempt($clientIp); // Still record this IP attempt leading to discovering a locked user
-            $auditLogger->log(
-                \LoginSystem\Logging\AuditLoggerService::EVENT_LOGIN_FAILED_USER_LOCKOUT,
-                $userData['id'],
-                ['ip_address' => $clientIp, 'username' => $userData['username']]
-            );
-            $authController->getAndSetFlashMessage('errors', ["This account has been temporarily locked due to too many failed login attempts. Please try again later."], true);
-            $authController->redirect(PAGE_SIGNIN);
-        }
-
-        // Check if email verification is required and if user is verified
-        if (defined('EMAIL_VERIFICATION_ENABLED') && EMAIL_VERIFICATION_ENABLED === true) {
-            if (!isset($userData['is_verified']) || (int)$userData['is_verified'] === 0) {
-                // Email not verified
-                $auditLogger->log(
-                    \LoginSystem\Logging\AuditLoggerService::EVENT_LOGIN_FAILED_EMAIL_NOT_VERIFIED,
-                    $userData['id'],
-                    ['ip_address' => $clientIp, 'username' => $userData['username']]
-                );
-                // Record failed login attempt for IP and User
-                $rateLimiter->recordIpLoginAttempt($clientIp);
-                $rateLimiter->recordUserLoginAttempt($userData['id']);
-                
-                // For now, a generic message. A resend link could be added later.
-                $authController->getAndSetFlashMessage('errors', ["Your email address is not verified. Please check your email for the verification link."], true);
-                $authController->redirect(PAGE_SIGNIN);
-            }
-        }
-
-        // If email is verified (or verification is not enabled), proceed to password check
-        if ($user->verifyPassword($userData, $password)) {
-            // Successful Login
-            $rateLimiter->clearIpLoginAttempts($clientIp);
-            $rateLimiter->clearUserLoginAttempts($userData['id']);
-            
-            $auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_USER_LOGIN_SUCCESS, $userData['id'], ['ip_address' => $clientIp]);
-            $authController->login($userData['id'], $userData['username']);
-
-            // Handle "Remember Me"
-            if (isset($_POST['remember_me']) && $_POST['remember_me'] === '1') {
-                // Ensure PersistentSessionManager is available or initialized
-                // Assuming $pdo, $auditLogger, and $user are available globally from bootstrap.php
-                if (isset($pdo) && isset($auditLogger) && isset($user)) {
-                     // The User service is needed by PersistentSessionManager as per its constructor.
-                    $persistentSessionManager = new \LoginSystem\Security\PersistentSessionManager($pdo, $auditLogger, $user);
-                    $persistentSessionManager->createPersistentSession($userData['id']);
-                } else {
-                    // Log an error if dependencies are not available
-                    error_log("PersistentSessionManager dependencies not available in signin.php");
-                }
-            }
-
-            $authController->redirect(PAGE_DASHBOARD);
-        } else {
-            // Invalid password
-            $rateLimiter->recordIpLoginAttempt($clientIp);
-            $rateLimiter->recordUserLoginAttempt($userData['id']);
-            $auditLogger->log(
-                \LoginSystem\Logging\AuditLoggerService::EVENT_USER_LOGIN_FAILURE, // This constant is for bad password specifically when user is known
-                $userData['id'],
-                ['ip_address' => $clientIp, 'username_attempted' => $login_identifier, 'reason' => 'Invalid password']
-            );
-            $authController->getAndSetFlashMessage('errors', ['Invalid credentials. Please try again.'], true);
-            $authController->redirect(PAGE_SIGNIN);
-        }
-    } else {
-        // User not found
-        $rateLimiter->recordIpLoginAttempt($clientIp);
-        $auditLogger->log(
-            \LoginSystem\Logging\AuditLoggerService::EVENT_LOGIN_FAILED_UNKNOWN_USER,
-            null,
-            ['ip_address' => $clientIp, 'username_attempted' => $login_identifier]
-        );
-        $authController->getAndSetFlashMessage('errors', ['Invalid credentials. Please try again.'], true);
-        $authController->redirect(PAGE_SIGNIN);
-    }
-
-} else { // GET request
+// The following block handles GET requests or scenarios where POST logic doesn't redirect.
+// For GET requests, it ensures a CSRF token is available for the form.
+if ($_SERVER['REQUEST_METHOD'] === 'GET') { 
     // Generate CSRF token for the form if it's not already set (idempotent)
     $security->generateCsrfToken();
 }
@@ -163,8 +33,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign In - <?php echo $security->escapeHTML(defined('SITE_NAME') ? SITE_NAME : 'Login System'); ?></title>
-    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="css/style.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="login_system/css/style.css">
 </head>
 <body>
     <div class="container">
@@ -177,29 +47,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <form id="signinForm" method="POST" action="<?php echo $authController->buildUrl(PAGE_SIGNIN); ?>" novalidate>
                 <?php echo $security->getCsrfInput(); ?>
 
-                <div class="form-group">
-                    <label for="login_identifier">Username or Email</label>
+                <div class="mb-3">
+                    <label for="login_identifier" class="form-label">Username or Email</label>
                     <input type="text" class="form-control" id="login_identifier" name="login_identifier" required value="<?php echo $login_identifier_value; ?>">
                     <div class="invalid-feedback">Username or Email is required.</div>
                 </div>
-                <div class="form-group">
-                    <label for="password">Password</label>
+                <div class="mb-3">
+                    <label for="password" class="form-label">Password</label>
                     <input type="password" class="form-control" id="password" name="password" required>
                     <div class="invalid-feedback">Password is required.</div>
                 </div>
-                <div class="form-group">
-                    <label for="password">Password</label>
+                <div class="mb-3">
+                    <label for="password" class="form-label">Password</label> <!-- Assuming this duplicate field is intentional or will be handled separately -->
                     <input type="password" class="form-control" id="password" name="password" required>
                     <div class="invalid-feedback">Password is required.</div>
                 </div>
-                <div class="form-group form-check">
+                <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="remember_me" name="remember_me" value="1">
                     <label class="form-check-label" for="remember_me">Remember Me</label>
                 </div>
-                <div class="form-group">
+                <div class="mb-3">
                     <a href="<?php echo $authController->buildUrl(PAGE_FORGOT_PASSWORD); ?>">Forgot Password?</a>
                 </div>
-                <button type="submit" class="btn btn-primary btn-block">Sign In</button>
+                <button type="submit" class="btn btn-primary w-100">Sign In</button>
             </form>
             <p class="text-center mt-3">
                 Don't have an account? <a href="<?php echo $authController->buildUrl(PAGE_SIGNUP); ?>">Sign Up</a>
@@ -224,8 +94,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }, false);
         })();
     </script>
-    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
-    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

@@ -70,7 +70,8 @@ class VerificationPageTest extends TestCase
         // Ensure the path is correct relative to this test file or PHPUnit's execution dir.
         // If phpunit.xml sets a bootstrap that defines a base path, use that.
         // Assuming verify_email.php is in the project root.
-        include __DIR__ . '/../verify_email.php';
+        // __DIR__ is login_system/tests, so ../../ is the project root.
+        include __DIR__ . '/../../verify_email.php';
         return ob_get_clean();
     }
 
