@@ -1,96 +1,86 @@
 <?php
-session_start();
+/**
+ * Handles new user registration.
+ *
+ * This script displays the registration form, processes submissions,
+ * validates input, creates new user accounts, and manages user feedback
+ * using services from bootstrap.php.
+ */
+require_once 'src/bootstrap.php'; // Defines $authController, $user, $security
 
-// HTTP Security Headers
-header("Content-Security-Policy: default-src 'self'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://stackpath.bootstrapcdn.com; style-src 'self' https://stackpath.bootstrapcdn.com 'unsafe-inline'; img-src 'self' data:; font-src 'self' https://stackpath.bootstrapcdn.com;");
-header("X-Content-Type-Options: nosniff");
-header("X-Frame-Options: DENY");
-header("Referrer-Policy: strict-origin-when-cross-origin");
-// header("Strict-Transport-Security: max-age=31536000; includeSubDomains; preload"); // Uncomment if site is HTTPS only
-
-if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-}
-
-$db_path = 'db/users.sqlite';
-$pdo = new PDO('sqlite:' . $db_path);
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+// Ensure user is a guest (not logged in), redirect to dashboard if logged in
+$authController->requireGuest();
 
 $errors = [];
-$success_message = '';
+$form_values = [
+    'username' => '',
+    'email' => ''
+];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!isset($_POST['csrf_token']) || !isset($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+    if (!$security->verifyCsrfToken($_POST[CSRF_TOKEN_NAME] ?? '')) {
         $errors[] = 'Security token validation failed. Please try submitting the form again.';
     } else {
-        // CSRF token is valid, proceed with form processing
-        unset($_SESSION['csrf_token']); // Invalidate token after use
-
         $username = trim($_POST['username'] ?? '');
         $email = trim($_POST['email'] ?? '');
-    $username = trim($_POST['username'] ?? '');
-    $email = trim($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
-    $confirm_password = $_POST['confirm_password'] ?? '';
+        $password = $_POST['password'] ?? '';
+        $confirm_password = $_POST['confirm_password'] ?? '';
 
-    // Basic validation
-    if (empty($username)) {
-        $errors[] = 'Username is required.';
-    }
-    if (empty($email)) {
-        $errors[] = 'Email is required.';
-    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errors[] = 'Invalid email format.';
-    }
-    if (empty($password)) {
-        $errors[] = 'Password is required.';
-    } elseif (strlen($password) < 8) {
-        $errors[] = 'Password must be at least 8 characters long.';
-    }
-    if ($password !== $confirm_password) {
-        $errors[] = 'Passwords do not match.';
-    }
+        $form_values['username'] = $security->escapeHTML($username);
+        $form_values['email'] = $security->escapeHTML($email);
 
-    // Check if username or email already exists
-    if (empty($errors)) {
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE username = :username OR email = :email");
-        $stmt->execute([':username' => $username, ':email' => $email]);
-        if ($stmt->fetchColumn() > 0) {
-            $stmt_check_username = $pdo->prepare("SELECT COUNT(*) FROM users WHERE username = :username");
-            $stmt_check_username->execute([':username' => $username]);
-            if ($stmt_check_username->fetchColumn() > 0) {
+        // Basic validation
+        if (empty($username)) {
+            $errors[] = 'Username is required.';
+        }
+        if (empty($email)) {
+            $errors[] = 'Email is required.';
+        } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $errors[] = 'Invalid email format.';
+        }
+        if (empty($password)) {
+            $errors[] = 'Password is required.';
+        } elseif (strlen($password) < 8) {
+            $errors[] = 'Password must be at least 8 characters long.';
+        }
+        if ($password !== $confirm_password) {
+            $errors[] = 'Passwords do not match.';
+        }
+
+        // Check if username or email already exists
+        if (empty($errors)) {
+            if ($user->findByLogin($username)) {
                 $errors[] = 'Username already taken. Please choose another.';
             }
-
-            $stmt_check_email = $pdo->prepare("SELECT COUNT(*) FROM users WHERE email = :email");
-            $stmt_check_email->execute([':email' => $email]);
-            if ($stmt_check_email->fetchColumn() > 0) {
-                $errors[] = 'Email already registered. Please use another or login.';
+            if ($user->findByLogin($email)) {
+                $errors[] = 'Email already registered. Please use another or <a href="signin.php">sign in</a>.';
             }
         }
-    }
 
-    if (empty($errors)) {
-        $password_hash = password_hash($password, PASSWORD_DEFAULT);
-        try {
-            $stmt = $pdo->prepare("INSERT INTO users (username, email, password_hash) VALUES (:username, :email, :password_hash)");
-            $stmt->execute([
-                ':username' => $username,
-                ':email' => $email,
-                ':password_hash' => $password_hash
-            ]);
-            $success_message = 'Signup successful! You can now <a href="signin.php">sign in</a>.';
-        } catch (PDOException $e) {
-            // Catch potential unique constraint violation if checks somehow failed (race condition, etc.)
-            if ($e->getCode() == 23000) { // SQLSTATE[23000]: Integrity constraint violation
-                 $errors[] = 'Username or email already exists.';
+        if (empty($errors)) {
+            $userId = $user->create($username, $email, $password);
+            if ($userId) {
+                $signInUrl = $authController->buildUrl(PAGE_SIGNIN);
+                $authController->getAndSetFlashMessage('success', "Signup successful! You can now <a href='{$signInUrl}'>sign in</a>.");
+                $authController->redirect(PAGE_SIGNUP); // Redirect to show success and clear form
             } else {
-                 $errors[] = 'An error occurred during registration. Please try again.';
-                 // Log $e->getMessage() for debugging in a real application
+                $errors[] = 'An error occurred during registration. Please try again. If the problem persists, contact support.';
+                // Detailed error is logged by User class
             }
         }
     }
+    if (!empty($errors)) {
+        $authController->getAndSetFlashMessage('errors', $errors, true);
+        $authController->redirect(PAGE_SIGNUP); // Redirect to show flash errors
+    }
+
+} else {
+    // Generate CSRF token for GET request
+    $security->generateCsrfToken();
 }
+
+$successMessageHTML = $authController->getAndSetFlashMessage('success');
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -103,32 +93,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body>
     <div class="container">
-        <div class="auth-container"> <!-- Changed class here -->
+        <div class="auth-container">
             <h2 class="text-center mb-4">Create Account</h2>
 
-            <?php if (!empty($errors)): ?>
-                <div class="alert alert-danger">
-                    <?php foreach ($errors as $error): ?>
-                        <p class="mb-0"><?php echo htmlspecialchars($error); ?></p>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
+            <?php display_flash_messages('errors', 'danger'); ?>
 
-            <?php if ($success_message): ?>
+            <?php if ($successMessageHTML): ?>
                 <div class="alert alert-success">
-                    <p class="mb-0"><?php echo $success_message; // Already contains HTML link, so not escaping ?></p>
+                    <?php 
+                        // Message from User::create can contain HTML, so not escaping here
+                        // Ensure any HTML set in flash messages is safe or appropriately escaped there.
+                        // For this specific success message, we allow the link.
+                        echo $successMessageHTML; 
+                    ?>
                 </div>
-            <?php else: // Hide form on success ?>
-            <form id="signupForm" method="POST" action="signup.php" novalidate>
-                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
+            <?php else: // Hide form on success (success message is shown above) ?>
+            <form id="signupForm" method="POST" action="<?php echo $authController->buildUrl(PAGE_SIGNUP); ?>" novalidate>
+                <?php echo $security->getCsrfInput(); ?>
                 <div class="form-group">
                     <label for="username">Username</label>
-                    <input type="text" class="form-control" id="username" name="username" required value="<?php echo htmlspecialchars($_POST['username'] ?? ''); ?>">
+                    <input type="text" class="form-control" id="username" name="username" required value="<?php echo $form_values['username']; ?>">
                     <div class="invalid-feedback">Username is required.</div>
                 </div>
                 <div class="form-group">
                     <label for="email">Email address</label>
-                    <input type="email" class="form-control" id="email" name="email" required value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>">
+                    <input type="email" class="form-control" id="email" name="email" required value="<?php echo $form_values['email']; ?>">
                     <div class="invalid-feedback">Please enter a valid email.</div>
                 </div>
                 <div class="form-group">
@@ -144,13 +133,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <button type="submit" class="btn btn-primary btn-block">Sign Up</button>
             </form>
             <p class="text-center mt-3">
-                Already have an account? <a href="signin.php">Sign In</a>
+                Already have an account? <a href="<?php echo $authController->buildUrl(PAGE_SIGNIN); ?>">Sign In</a>
             </p>
             <?php endif; ?>
         </div>
     </div>
 
     <script>
+        // Standard Bootstrap validation script + password match
         (function() {
             'use strict';
             window.addEventListener('load', function() {
@@ -164,12 +154,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     form.classList.add('was-validated');
 
-                    // Custom validation for password match
                     var password = document.getElementById('password');
                     var confirmPassword = document.getElementById('confirm_password');
                     if (password.value !== confirmPassword.value) {
                         confirmPassword.setCustomValidity("Passwords do not match.");
-                        confirmPassword.parentElement.querySelector('.invalid-feedback').textContent = "Passwords do not match.";
+                        // Ensure the feedback div exists and update its text
+                        var feedback = confirmPassword.parentElement.querySelector('.invalid-feedback');
+                        if(feedback) feedback.textContent = "Passwords do not match.";
                         event.preventDefault();
                         event.stopPropagation();
                     } else {
@@ -177,24 +168,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }, false);
 
-                // Real-time password match feedback (optional but good UX)
                 var passwordInput = document.getElementById('password');
                 var confirmPasswordInput = document.getElementById('confirm_password');
                 if(passwordInput && confirmPasswordInput) {
-                    confirmPasswordInput.addEventListener('input', function() {
+                    function validatePasswordMatch() {
                         if (passwordInput.value !== confirmPasswordInput.value) {
                             confirmPasswordInput.setCustomValidity("Passwords do not match.");
                         } else {
                             confirmPasswordInput.setCustomValidity("");
                         }
-                    });
-                     passwordInput.addEventListener('input', function() { // if user changes original pass after typing confirm
-                        if (passwordInput.value !== confirmPasswordInput.value && confirmPasswordInput.value !== "") {
-                            confirmPasswordInput.setCustomValidity("Passwords do not match.");
-                        } else {
-                            confirmPasswordInput.setCustomValidity("");
-                        }
-                        // Trigger validation display on confirm field
+                    }
+                    confirmPasswordInput.addEventListener('input', validatePasswordMatch);
+                    passwordInput.addEventListener('input', function() {
+                        validatePasswordMatch();
+                        // If confirm has content, trigger its validation display
                         if(confirmPasswordInput.value !== ""){
                              confirmPasswordInput.reportValidity();
                         }

@@ -1,22 +1,19 @@
 <?php
-session_start();
+/**
+ * User dashboard page.
+ *
+ * This script displays the main dashboard for logged-in users.
+ * It requires login and shows user-specific information and navigation.
+ */
+require_once 'src/bootstrap.php'; // Defines $authController, $user, $security
 
+// Require login. If not logged in, will redirect to signin.php
+$authController->requireLogin();
 
-// HTTP Security Headers
-header("Content-Security-Policy: default-src 'self'; script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://stackpath.bootstrapcdn.com; style-src 'self' https://stackpath.bootstrapcdn.com 'unsafe-inline'; img-src 'self' data:; font-src 'self' https://stackpath.bootstrapcdn.com;");
-header("X-Content-Type-Options: nosniff");
-header("X-Frame-Options: DENY");
-header("Referrer-Policy: strict-origin-when-cross-origin");
-// header("Strict-Transport-Security: max-age=31536000; includeSubDomains; preload"); // Uncomment if site is HTTPS only
+// Get username for display
+$username = $authController->getLoggedInUsername();
+$usernameDisplay = $username ? $security->escapeHTML($username) : 'User';
 
-
-// Check if the user is logged in, if not then redirect to login page
-if (!isset($_SESSION["user_id"])) {
-    header("Location: signin.php");
-    exit;
-}
-
-$username = $_SESSION["username"] ?? 'User'; // Default to 'User' if username somehow not set
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -29,7 +26,7 @@ $username = $_SESSION["username"] ?? 'User'; // Default to 'User' if username so
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-light bg-light container">
-        <a class="navbar-brand" href="#">My Application</a>
+        <a class="navbar-brand" href="<?php echo $authController->buildUrl(PAGE_DASHBOARD); ?>">My Application</a>
         <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
             <span class="navbar-toggler-icon"></span>
         </button>
@@ -37,11 +34,11 @@ $username = $_SESSION["username"] ?? 'User'; // Default to 'User' if username so
             <ul class="navbar-nav ml-auto">
                 <li class="nav-item">
                     <span class="navbar-text">
-                        Welcome, <?php echo htmlspecialchars($username); ?>!
+                        Welcome, <?php echo $usernameDisplay; ?>!
                     </span>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link" href="logout.php">Logout</a>
+                    <a class="nav-link" href="<?php echo $authController->buildUrl(PAGE_LOGOUT); ?>">Logout</a>
                 </li>
             </ul>
         </div>
@@ -49,24 +46,24 @@ $username = $_SESSION["username"] ?? 'User'; // Default to 'User' if username so
 
     <div class="container">
         <div class="dashboard-container">
+            <?php display_flash_messages('success', 'success'); ?>
             <h1 class="text-center">User Dashboard</h1>
             <hr>
             <p>This is a protected area. Only logged-in users can see this page.</p>
             <p>Here you might find user-specific information or application features.</p>
             
-            <!-- Example Content -->
             <div class="card mt-4">
                 <div class="card-body">
                     <h5 class="card-title">Your Profile</h5>
                     <p class="card-text">Some details about your profile could go here.</p>
-                    <a href="#" class="btn btn-primary">Edit Profile (Not Implemented)</a>
+                    <a href="#" class="btn btn-primary disabled">Edit Profile (Not Implemented)</a>
                 </div>
             </div>
              <div class="card mt-3">
                 <div class="card-body">
                     <h5 class="card-title">Settings</h5>
                     <p class="card-text">Application settings could be managed here.</p>
-                    <a href="#" class="btn btn-secondary">Manage Settings (Not Implemented)</a>
+                    <a href="#" class="btn btn-secondary disabled">Manage Settings (Not Implemented)</a>
                 </div>
             </div>
         </div>
