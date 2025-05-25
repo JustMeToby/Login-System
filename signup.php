@@ -43,27 +43,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (strlen($password) < 8) {
             $errors[] = 'Password must be at least 8 characters long.';
         }
-        if ($password !== $confirm_password) {
+        if (empty($password)) { // This check for empty password is fine
+            $errors[] = 'Password is required.';
+        } elseif ($password !== $confirm_password) { // Check match before policy
             $errors[] = 'Passwords do not match.';
+        } else {
+            // Passwords match, now check policy
+            // Note: The individual check for min length (strlen($password) < 8) is now covered by the policy service.
+            // We can remove it if PASSWORD_POLICY_MIN_LENGTH is always set and >= 8, or keep it as a preliminary client-side hint.
+            // For this integration, we'll rely on the policy service for password content validation.
+            // The old: elseif (strlen($password) < 8) { $errors[] = 'Password must be at least 8 characters long.'; } can be removed
+            // if the policy service handles min length effectively.
+            
+            $passwordPolicyService = new \LoginSystem\Security\PasswordPolicyService();
+            $policyErrors = $passwordPolicyService->validatePassword($password);
+            if (!empty($policyErrors)) {
+                $errors = array_merge($errors, $policyErrors);
+            }
         }
 
-        // Check if username or email already exists
+        // Proceed to check username/email existence only if other validations (including password policy) passed
         if (empty($errors)) {
             if ($user->findByLogin($username)) {
                 $errors[] = 'Username already taken. Please choose another.';
             }
-            if ($user->findByLogin($email)) {
+            // Check email existence only if username was not already taken (and other errors are still empty)
+            if (empty($errors) && $user->findByLogin($email)) {
                 $errors[] = 'Email already registered. Please use another or <a href="signin.php">sign in</a>.';
             }
         }
 
         if (empty($errors)) {
-            $userId = $user->create($username, $email, $password);
+            // All checks passed, including password policy and unique username/email
+            // All checks passed, including password policy and unique username/email
+            $userId = $user->create($username, $email, $password); // User::create already logs EVENT_USER_REGISTERED
             if ($userId) {
-                $signInUrl = $authController->buildUrl(PAGE_SIGNIN);
-                $authController->getAndSetFlashMessage('success', "Signup successful! You can now <a href='{$signInUrl}'>sign in</a>.");
-                $authController->redirect(PAGE_SIGNUP); // Redirect to show success and clear form
+                if (defined('EMAIL_VERIFICATION_ENABLED') && EMAIL_VERIFICATION_ENABLED === true) {
+                    // Log the request for verification email (already done in previous turn, this is a good place)
+                    if ($auditLogger) {
+                        $auditLogger->log(
+                            \LoginSystem\Logging\AuditLoggerService::EVENT_EMAIL_VERIFICATION_REQUESTED,
+                            (int)$userId,
+                            ['email' => $email] // Logged with user ID and email
+                        );
+                    }
+
+                    // Fetch the user data to get the token
+                    $newUserData = $user->findById((int)$userId);
+                    if ($newUserData && !empty($newUserData['verification_token'])) {
+                        $verificationLink = $authController->buildUrl(PAGE_VERIFY_EMAIL, 'token=' . urlencode($newUserData['verification_token']));
+                        $successMessage = "Registration successful! A verification link has been 'sent' to your email address. Please click the link to activate your account. <br><strong>Verification Link (for dev):</strong> <a href='" . $security->escapeHTML($verificationLink) . "'>" . $security->escapeHTML($verificationLink) . "</a>";
+                        $authController->getAndSetFlashMessage('success', $successMessage);
+                    } else {
+                        // This case should ideally not happen if User::create works as expected
+                        error_log("Failed to retrieve verification token for new user ID: {$userId}");
+                        $authController->getAndSetFlashMessage('errors', ['Registration was successful, but there was an issue sending the verification email. Please contact support.'], true);
+                    }
+                } else {
+                    // Email verification not enabled
+                    $signInUrl = $authController->buildUrl(PAGE_SIGNIN);
+                    $authController->getAndSetFlashMessage('success', "Registration successful! You can now <a href='{$signInUrl}'>sign in</a>.");
+                }
+                // Redirect to signin page to show the message (or signup page itself if preferred)
+                $authController->redirect(PAGE_SIGNIN); 
             } else {
+                // User creation failed (e.g. DB error not caught by earlier checks)
                 $errors[] = 'An error occurred during registration. Please try again. If the problem persists, contact support.';
                 // Detailed error is logged by User class
             }

@@ -88,6 +88,8 @@ class AuthController {
         session_regenerate_id(true);
         $_SESSION[SESSION_USER_ID_KEY] = $userId;
         $_SESSION[SESSION_USERNAME_KEY] = $username;
+        $_SESSION['session_created_at'] = time();
+        $_SESSION['session_last_activity_at'] = time();
     }
 
     /**

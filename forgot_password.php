@@ -18,26 +18,38 @@ $authController->requireGuest(); // User should not be logged in
 $form_email_value = ''; // To repopulate form field on non-redirecting errors (not current flow)
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $email = trim($_POST['email'] ?? ''); // Get email early for logging
+    $form_email_value = $security->escapeHTML($email);
+
     // ** Check IP Rate Limit First **
-    if ($rateLimiter->isBlocked($clientIp, \LoginSystem\Security\RateLimiterService::TYPE_IP_RESET_REQUEST)) {
-        $authController->getAndSetFlashMessage('errors', ["Too many password reset requests from your IP address. Please try again later."], true);
+    if (!$rateLimiter->checkPasswordResetIpAttempts($clientIp)) {
+        if ($auditLogger) {
+            $auditLogger->log(
+                \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_REQUEST_FAILED_IP_LOCKOUT,
+                null,
+                ['ip_address' => $clientIp, 'email_attempted' => $email]
+            );
+        }
+        $authController->getAndSetFlashMessage('errors', ["Too many password reset requests from this IP address. Please try again later."], true);
         $authController->redirect(PAGE_FORGOT_PASSWORD); // redirect() handles exit
     }
 
     if (!$security->verifyCsrfToken($_POST[CSRF_TOKEN_NAME] ?? '')) {
+        // Record the attempt even for CSRF failure, as it's an interaction with the reset system.
+        $rateLimiter->recordPasswordResetIpAttempt($clientIp);
+        if ($auditLogger) {
+            $auditLogger->log(
+                \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_REQUEST_FAILED_IP_LOCKOUT, // Using a generic failure type or a specific CSRF failure for reset
+                null,
+                ['ip_address' => $clientIp, 'email_attempted' => $email, 'reason' => 'CSRF token validation failed']
+            );
+        }
         $authController->getAndSetFlashMessage('errors', ['Security token validation failed. Please try submitting the form again.'], true);
-        // Note: A failed CSRF might not count towards specific reset request limits,
-        // but could be logged or handled by a more general IP-based suspicious activity limiter.
-        // For this specific task, we are focusing on TYPE_IP_RESET_REQUEST after CSRF passes.
         $authController->redirect(PAGE_FORGOT_PASSWORD);
     }
 
-    // ** Record the reset attempt from this IP after CSRF passes **
-    // This ensures that even if the email is invalid or other issues occur, the attempt from this IP is noted.
-    $rateLimiter->recordAttempt($clientIp, \LoginSystem\Security\RateLimiterService::TYPE_IP_RESET_REQUEST);
-
-    $email = trim($_POST['email'] ?? '');
-    $form_email_value = $security->escapeHTML($email); // For re-populating form if needed (though we redirect)
+    // ** Record the reset attempt from this IP after CSRF passes and IP not initially locked **
+    $rateLimiter->recordPasswordResetIpAttempt($clientIp);
 
     $current_errors = []; // Use a temporary array for current request errors
     if (empty($email)) {
@@ -47,41 +59,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (!empty($current_errors)) {
+        // No specific user ID yet, logging against IP. The attempt was already recorded.
+        if ($auditLogger) {
+             $auditLogger->log(
+                \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_REQUEST_FAILED_USER_NOT_FOUND, // Or a more generic validation error type
+                null,
+                ['ip_address' => $clientIp, 'email_attempted' => $email, 'reason' => implode(', ', $current_errors)]
+            );
+        }
         $authController->getAndSetFlashMessage('errors', $current_errors, true);
         $authController->redirect(PAGE_FORGOT_PASSWORD); // Redirect back to the form
     }
 
-    // At this point, CSRF is valid, email format is valid, and attempt is recorded.
-    // Proceed with token generation logic.
+    // At this point, CSRF is valid, email format is valid, attempt is recorded.
+    // IP was not locked out when checked.
     $userData = $user->findByLogin($email); // findByLogin can find by email
 
     if ($userData) {
         $token = bin2hex(random_bytes(32));
-        // Using EMAIL_VERIFICATION_TOKEN_LIFESPAN_SECONDS as per instruction for now.
-        // A dedicated PASSWORD_RESET_TOKEN_LIFESPAN_SECONDS would be better.
-        $expiryDateTime = date('Y-m-d H:i:s', time() + (defined('EMAIL_VERIFICATION_TOKEN_LIFESPAN_SECONDS') ? EMAIL_VERIFICATION_TOKEN_LIFESPAN_SECONDS : 86400));
+        $expirySeconds = defined('PASSWORD_RESET_TOKEN_LIFESPAN_SECONDS') ? PASSWORD_RESET_TOKEN_LIFESPAN_SECONDS : (defined('EMAIL_VERIFICATION_TOKEN_LIFESPAN_SECONDS') ? EMAIL_VERIFICATION_TOKEN_LIFESPAN_SECONDS : 86400);
+        $expiryDateTime = date('Y-m-d H:i:s', time() + $expirySeconds);
 
         if ($user->setResetToken($userData['email'], $token, $expiryDateTime)) {
             $resetLink = $authController->buildUrl(PAGE_RESET_PASSWORD, 'token=' . $token);
             $successMsg = "If an account with that email exists, a password reset link has been generated.";
-            // buildUrl already escapes the URL for HTML attribute context.
-            // Displaying the link text itself should also be escaped if it's constructed from parts that could be malicious,
-            // but here $resetLink is fully formed and escaped by buildUrl.
             $infoMsg = "Password Reset Link (for demonstration only, would be emailed in production): <a href='" . $resetLink . "'>" . $security->escapeHTML($resetLink) . "</a>";
             
             $authController->getAndSetFlashMessage('success', $successMsg);
             $authController->getAndSetFlashMessage('info', $infoMsg);
-            // Audit log for request
-            if ($auditLogger) { // $auditLogger is globally available
-                $auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_REQUESTED, $userData['id'], ['email' => $userData['email']]);
+            if ($auditLogger) {
+                $auditLogger->log(
+                    \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_REQUEST_SUCCESS,
+                    $userData['id'],
+                    ['ip_address' => $clientIp, 'email' => $userData['email']]
+                );
             }
         } else {
             // This indicates a server-side issue with setting the token.
+            if ($auditLogger) {
+                $auditLogger->log(
+                    \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_REQUEST_FAILED_USER_NOT_FOUND, // Generic failure, could be more specific
+                    $userData['id'],
+                    ['ip_address' => $clientIp, 'email' => $userData['email'], 'reason' => 'Failed to set reset token in database.']
+                );
+            }
             $authController->getAndSetFlashMessage('errors', ['Could not generate reset token due to a system error. Please try again later.'], true);
         }
     } else {
+        // User/Email not found
+        if ($auditLogger) {
+            $auditLogger->log(
+                \LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_RESET_REQUEST_FAILED_USER_NOT_FOUND,
+                null,
+                ['ip_address' => $clientIp, 'email_attempted' => $email, 'reason' => 'Email not found in system.']
+            );
+        }
         // Generic message to avoid disclosing whether an email is registered or not.
-        // This is the same message as if successful token generation to prevent email enumeration.
         $authController->getAndSetFlashMessage('success', "If an account with that email exists, a password reset link has been generated.");
     }
     

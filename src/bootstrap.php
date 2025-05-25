@@ -114,6 +114,64 @@ if (!$user->createAdminAccountIfNotExists()) {
 // Alternatives could be a service locator or dependency injection container for larger apps.
 global $pdo, $security, $user, $authController, $rateLimiter, $auditLogger;
 
+// --- Persistent Session "Remember Me" Check ---
+// Attempt to log in via "Remember Me" cookie if no active session exists.
+// Must be after services are initialized and session is started, but before regular session timeout checks.
+if (!isset($_SESSION[SESSION_USER_ID_KEY]) && isset($_COOKIE[REMEMBER_ME_COOKIE_NAME_SERIES]) && isset($_COOKIE[REMEMBER_ME_COOKIE_NAME_TOKEN])) {
+    if ($pdo && $auditLogger && $user && $authController) { // Ensure all dependencies are loaded
+        $persistentSessionManager = new \LoginSystem\Security\PersistentSessionManager($pdo, $auditLogger, $user);
+        $userSessionData = $persistentSessionManager->validatePersistentSession();
+        if ($userSessionData) {
+            // Persistent session is valid, log the user in.
+            // AuthController::login() will handle setting up the session variables including timestamps.
+            $authController->login($userSessionData['id'], $userSessionData['username']);
+            // Note: EVENT_SESSION_REMEMBER_ME_TOKEN_USED is logged by PersistentSessionManager
+        }
+    } else {
+        error_log("PersistentSessionManager dependencies not available in bootstrap.php for Remember Me check.");
+    }
+}
+
+// --- Session Timeout Logic ---
+// Must be after AuthController and AuditLogger are initialized, and after session_start().
+// Also after potential Remember Me login, so the new session is immediately subject to timeouts.
+if (isset($_SESSION[SESSION_USER_ID_KEY]) && $authController && $auditLogger) {
+    $currentTime = time();
+    $userIdForTimeout = $_SESSION[SESSION_USER_ID_KEY]; // Store before potential logout
+
+    // Absolute Timeout Check
+    if (isset($_SESSION['session_created_at']) && defined('SESSION_ABSOLUTE_TIMEOUT_SECONDS')) {
+        $sessionDuration = $currentTime - $_SESSION['session_created_at'];
+        if ($sessionDuration > SESSION_ABSOLUTE_TIMEOUT_SECONDS) {
+            $auditLogger->log(
+                \LoginSystem\Logging\AuditLoggerService::EVENT_SESSION_EXPIRED_ABSOLUTE,
+                $userIdForTimeout,
+                ['session_duration_seconds' => $sessionDuration]
+            );
+            $authController->getAndSetFlashMessage('errors', ["Your session has expired for security reasons. Please log in again."], true);
+            $authController->logout(); // This will exit
+        }
+    }
+
+    // Idle Timeout Check (only if not logged out by absolute timeout)
+    if (isset($_SESSION['session_last_activity_at']) && defined('SESSION_IDLE_TIMEOUT_SECONDS')) {
+        $idleTime = $currentTime - $_SESSION['session_last_activity_at'];
+        if ($idleTime > SESSION_IDLE_TIMEOUT_SECONDS) {
+            $auditLogger->log(
+                \LoginSystem\Logging\AuditLoggerService::EVENT_SESSION_EXPIRED_IDLE,
+                $userIdForTimeout,
+                ['idle_time_seconds' => $idleTime]
+            );
+            $authController->getAndSetFlashMessage('errors', ["Your session has expired due to inactivity. Please log in again."], true);
+            $authController->logout(); // This will exit
+        }
+    }
+
+    // If no timeout occurred, update the last activity time for the current request
+    $_SESSION['session_last_activity_at'] = $currentTime;
+}
+
+
 // --- Flash Message Convenience ---
 /**
  * Displays flash messages stored in the session for a given key.

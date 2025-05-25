@@ -48,23 +48,45 @@ class User {
         }
 
         try {
-            $stmt = $this->pdo->prepare("INSERT INTO " . USER_TABLE_NAME . " (username, email, password_hash, created_at, updated_at) VALUES (:username, :email, :password_hash, datetime('now'), datetime('now'))");
-            $stmt->execute([
+            $params = [
                 ':username' => $username,
                 ':email' => $email,
                 ':password_hash' => $passwordHash
-            ]);
+            ];
+
+            if (defined('EMAIL_VERIFICATION_ENABLED') && EMAIL_VERIFICATION_ENABLED === true) {
+                $verificationToken = bin2hex(random_bytes(32));
+                $tokenExpiryTime = date('Y-m-d H:i:s', time() + (defined('EMAIL_VERIFICATION_TOKEN_LIFESPAN_SECONDS') ? EMAIL_VERIFICATION_TOKEN_LIFESPAN_SECONDS : 86400));
+                
+                $sql = "INSERT INTO " . USER_TABLE_NAME . " (username, email, password_hash, verification_token, verification_token_expiry, is_verified, created_at, updated_at) 
+                        VALUES (:username, :email, :password_hash, :verification_token, :verification_token_expiry, 0, datetime('now', 'localtime'), datetime('now', 'localtime'))";
+                $params[':verification_token'] = $verificationToken;
+                $params[':verification_token_expiry'] = $tokenExpiryTime;
+                // is_verified defaults to 0 per schema, but explicitly setting it is also fine.
+            } else {
+                $sql = "INSERT INTO " . USER_TABLE_NAME . " (username, email, password_hash, is_verified, created_at, updated_at) 
+                        VALUES (:username, :email, :password_hash, 1, datetime('now', 'localtime'), datetime('now', 'localtime'))";
+                // No token needed, is_verified is set to 1
+            }
+            
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($params);
+            
             $userId = $this->pdo->lastInsertId();
+
             if ($userId && $this->auditLogger) {
-                $this->auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_USER_REGISTERED, (int)$userId, ['username' => $username, 'email' => $email]);
+                $details = ['username' => $username, 'email' => $email, 'verification_enabled' => (defined('EMAIL_VERIFICATION_ENABLED') && EMAIL_VERIFICATION_ENABLED === true)];
+                if (isset($verificationToken)) {
+                    $details['verification_token_set'] = true; // Or even log the token if policy allows (not recommended for production logs)
+                }
+                $this->auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_USER_REGISTERED, (int)$userId, $details);
             }
             return $userId;
         } catch (\PDOException $e) {
-            // Log error, check for specific codes like unique constraint violation (23000)
             error_log("User creation failed: " . $e->getMessage());
-            if ($e->getCode() == 23000 || $e->getCode() == '23000') { // SQLite error code for unique constraint
-                // Could be username or email, specific check might be needed if desired
-                // For now, just return false or a specific error indicator
+            // Check for specific codes like unique constraint violation
+            if ($e->getCode() == 23000 || $e->getCode() == '23000') { 
+                // Handle unique constraint violation (username or email already exists)
             }
             return false;
         }
@@ -129,21 +151,45 @@ class User {
      * @return bool True on success, false on failure.
      */
     public function updatePassword(int $userId, string $newPassword): bool {
-        if ($this->pdo === null) return false;
+        if ($this->pdo === null) {
+            if ($this->auditLogger) {
+                $this->auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_CHANGE_FAILED, $userId, ['reason' => 'Database connection not available.']);
+            }
+            return false;
+        }
+        
         $newPasswordHash = password_hash($newPassword, PASSWORD_DEFAULT);
         if (!$newPasswordHash) {
             error_log("Password hashing failed during update.");
+            if ($this->auditLogger) {
+                $this->auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_CHANGE_FAILED, $userId, ['reason' => 'Password hashing failed.']);
+            }
             return false;
         }
 
         try {
             $stmt = $this->pdo->prepare("UPDATE " . USER_TABLE_NAME . " SET password_hash = :password_hash, updated_at = datetime('now') WHERE id = :id");
-            return $stmt->execute([
+            $success = $stmt->execute([
                 ':password_hash' => $newPasswordHash,
                 ':id' => $userId
             ]);
+
+            if ($success) {
+                if ($this->auditLogger) {
+                    $this->auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_CHANGE_SUCCESS, $userId);
+                }
+                return true;
+            } else {
+                if ($this->auditLogger) {
+                    $this->auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_CHANGE_FAILED, $userId, ['reason' => 'Database execute failed.']);
+                }
+                return false;
+            }
         } catch (\PDOException $e) {
             error_log("Update password failed: " . $e->getMessage());
+            if ($this->auditLogger) {
+                $this->auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_PASSWORD_CHANGE_FAILED, $userId, ['reason' => 'Database exception: ' . $e->getMessage()]);
+            }
             return false;
         }
     }
@@ -241,6 +287,171 @@ class User {
             error_log("Failed to create default admin account '" . $adminUsername . "'. Check logs for details (e.g., unique constraint on email if placeholder is reused).");
             return false;
         }
+    }
+
+    /**
+     * Finds a user by a valid (non-expired) email verification token.
+     *
+     * @param string $token The verification token.
+     * @return array|null User data array, or null if token not found or expired.
+     */
+    public function findUserByVerificationToken(string $token): ?array {
+        if ($this->pdo === null) return null;
+        try {
+            $stmt = $this->pdo->prepare(
+                "SELECT * FROM " . USER_TABLE_NAME . " 
+                 WHERE verification_token = :token 
+                 AND verification_token_expiry > datetime('now', 'localtime') 
+                 LIMIT 1"
+            );
+            $stmt->execute([':token' => $token]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $user ?: null;
+        } catch (\PDOException $e) {
+            error_log("Find user by verification token failed: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Marks a user's email address as verified.
+     *
+     * @param int $userId The ID of the user to verify.
+     * @return bool True on success, false on failure.
+     */
+    public function verifyEmailAddress(int $userId): bool {
+        if ($this->pdo === null) return false;
+        try {
+            $stmt = $this->pdo->prepare(
+                "UPDATE " . USER_TABLE_NAME . " 
+                 SET is_verified = 1, verification_token = NULL, verification_token_expiry = NULL, updated_at = datetime('now', 'localtime') 
+                 WHERE id = :id AND is_verified = 0"
+            );
+            $stmt->execute([':id' => $userId]);
+            
+            $success = $stmt->rowCount() > 0;
+
+            if ($success && $this->auditLogger) {
+                $this->auditLogger->log(\LoginSystem\Logging\AuditLoggerService::EVENT_EMAIL_VERIFICATION_SUCCESS, $userId);
+            }
+            return $success;
+        } catch (\PDOException $e) {
+            error_log("Verify email address failed: " . $e->getMessage());
+            return false;
+        }
+    }
+
+
+    // --- Placeholders for Email Change Feature ---
+
+    /**
+     * Hypothetical method to request an email change (e.g., sends verification to new email).
+     * @param int $userId
+     * @param string $newEmail
+     * @return bool
+     */
+    public function requestEmailChange(int $userId, string $newEmail): bool {
+        // $currentUser = $this->findById($userId);
+        // $oldEmail = $currentUser['email'] ?? 'unknown';
+        // ... logic to generate a token, store it with new email and user ID ...
+        // ... logic to send verification email to $newEmail ...
+        
+        // if ($this->auditLogger) {
+        //     $this->auditLogger->log(
+        //         \LoginSystem\Logging\AuditLoggerService::EVENT_EMAIL_CHANGE_REQUESTED,
+        //         $userId,
+        //         ['old_email' => $oldEmail, 'new_email' => $newEmail]
+        //     );
+        // }
+        return true; // Placeholder
+    }
+
+    /**
+     * Hypothetical method to confirm an email change using a token.
+     * @param int $userId
+     * @param string $token
+     * @return bool
+     */
+    public function confirmEmailChange(int $userId, string $token): bool {
+        // ... logic to validate token and find associated new email ...
+        // $newEmail = '...'; // Retrieved based on token
+        // $oldEmail = '...'; // Retrieved from user record before update
+
+        // if (/* token is valid and email updated successfully */) {
+        //     // ... actual email update in database ...
+        //     if ($this->auditLogger) {
+        //         $this->auditLogger->log(
+        //             \LoginSystem\Logging\AuditLoggerService::EVENT_EMAIL_CHANGE_SUCCESS,
+        //             $userId,
+        //             ['old_email' => $oldEmail, 'new_email' => $newEmail]
+        //         );
+        //     }
+        //     return true;
+        // } else {
+        //     if ($this->auditLogger) {
+        //         $this->auditLogger->log(
+        //             \LoginSystem\Logging\AuditLoggerService::EVENT_EMAIL_CHANGE_FAILED,
+        //             $userId,
+        //             ['email_attempted' => $newEmail, 'reason' => 'Invalid token or other error.']
+        //         );
+        //     }
+        //     return false;
+        // }
+        return true; // Placeholder
+    }
+
+    // --- Placeholders for Admin Actions ---
+
+    /**
+     * Hypothetical method for an admin to deactivate a user account.
+     * This assumes an admin check has already happened before calling this.
+     * @param int $adminUserId The ID of the admin performing the action.
+     * @param int $targetUserId The ID of the user to deactivate.
+     * @return bool
+     */
+    public function adminDeactivateUser(int $adminUserId, int $targetUserId): bool {
+        // ... logic to deactivate user $targetUserId ...
+        // $success = ... ; 
+        
+        // if ($this->auditLogger) {
+        //     $this->auditLogger->log(
+        //         \LoginSystem\Logging\AuditLoggerService::EVENT_ADMIN_ACTION,
+        //         $adminUserId,
+        //         [
+        //             'action' => 'deactivate_user',
+        //             'target_user_id' => $targetUserId,
+        //             'success' => $success // example detail
+        //         ]
+        //     );
+        // }
+        return true; // Placeholder
+    }
+    
+    /**
+     * Hypothetical method for an admin to change a user's role.
+     * This assumes an admin check has already happened before calling this.
+     * @param int $adminUserId The ID of the admin performing the action.
+     * @param int $targetUserId The ID of the user whose role is being changed.
+     * @param string $newRole The new role to assign.
+     * @return bool
+     */
+    public function adminChangeUserRole(int $adminUserId, int $targetUserId, string $newRole): bool {
+        // ... logic to change role for user $targetUserId ...
+        // $success = ... ;
+
+        // if ($this->auditLogger) {
+        //     $this->auditLogger->log(
+        //         \LoginSystem\Logging\AuditLoggerService::EVENT_ADMIN_ACTION,
+        //         $adminUserId,
+        //         [
+        //             'action' => 'change_user_role',
+        //             'target_user_id' => $targetUserId,
+        //             'new_role' => $newRole,
+        //             'success' => $success // example detail
+        //         ]
+        //     );
+        // }
+        return true; // Placeholder
     }
 }
 ?>
