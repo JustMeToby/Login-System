@@ -6,7 +6,7 @@
  * then calls the logout method which destroys the session and redirects
  * the user to the sign-in page.
  */
-require_once 'src/bootstrap.php'; // Defines $authController
+require_once 'login_system/src/bootstrap.php'; // Defines $authController
 
 // Perform logout
 $authController->logout(); // This method handles session destruction and redirects to signin.php

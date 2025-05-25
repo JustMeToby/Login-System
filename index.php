@@ -1,5 +1,5 @@
 <?php
-require_once 'src/bootstrap.php'; // Defines $authController and SESSION_USER_ID_KEY
+require_once 'login_system/src/bootstrap.php'; // Defines $authController and SESSION_USER_ID_KEY
 
 // No need to explicitly start session here, bootstrap.php handles it.
 

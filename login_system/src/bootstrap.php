@@ -80,6 +80,10 @@ if ($pdo === null) {
     die("<h1>Database Error</h1><p>A critical error occurred with the database. Please check system logs. If you are the administrator, ensure the database path in config/config.php is correct and the directory is writable. Also verify config/schema.sql.</p><p><a href='" . htmlspecialchars($baseUrlForError) . "/'>Go to homepage</a></p>");
 }
 
+// Audit Logger Service - Initialize early as other services depend on it.
+// The service itself checks defined('AUDIT_LOG_ENABLED') && AUDIT_LOG_ENABLED
+$auditLogger = new \LoginSystem\Logging\AuditLoggerService($pdo);
+
 // User Service
 $user = new \LoginSystem\Auth\User($pdo, $auditLogger);
 
@@ -93,10 +97,6 @@ $authController = new \LoginSystem\Auth\AuthController($user, $security, BASE_UR
 
 // Rate Limiter Service
 $rateLimiter = new \LoginSystem\Security\RateLimiterService($pdo, $auditLogger);
-
-// Audit Logger Service
-// The service itself checks defined('AUDIT_LOG_ENABLED') && AUDIT_LOG_ENABLED
-$auditLogger = new \LoginSystem\Logging\AuditLoggerService($pdo);
 
 
 // --- Initial Application Logic ---

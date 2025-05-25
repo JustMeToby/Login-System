@@ -1,60 +1,35 @@
 <?php
 // active_sessions.php
-require_once 'src/bootstrap.php';
-
-use LoginSystem\Security\PersistentSessionManager;
-use LoginSystem\Logging\AuditLoggerService;
+require_once 'login_system/src/bootstrap.php'; // Updated path
 
 // Ensure services are available (they are global from bootstrap.php)
-global $authController, $pdo, $auditLogger, $user, $security;
+// The bootstrap.php should handle critical service initialization.
+// Specific checks for each service can be removed if bootstrap is reliable.
+global $authController, $security; // $pdo, $auditLogger, $user are used by the include
 
-if (!$authController || !$pdo || !$auditLogger || !$user || !$security) {
-    die("Critical services are not available. Check bootstrap.php.");
+if (!$authController || !$security) {
+    // A basic check for essential services used directly on this page.
+    // The include handle_active_sessions.php has its own checks for services it uses.
+    if (function_exists('error_log')) {
+        error_log("Critical services (AuthController or Security) not available in active_sessions.php.");
+    }
+    die("Essential services are not available. Please check system configuration.");
 }
 
 $authController->requireLogin(); // User must be logged in
 
-$currentUserId = $authController->getLoggedInUserId();
-if (!$currentUserId) {
-    // Should not happen if requireLogin() works
-    $authController->redirect(PAGE_SIGNIN);
-}
+// $currentUserId is obtained and used within the included handler.
 
-$persistentSessionManager = new PersistentSessionManager($pdo, $auditLogger, $user);
+// Include the handler for POST logic and data fetching.
+// This script will define $sessions and $currentSeriesHashFromCookie.
+// It uses $authController, $pdo, $auditLogger, $user, $security from bootstrap.
+require_once 'login_system/includes/handle_active_sessions.php';
 
-// Handle CSRF and revocation actions
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!$security->verifyCsrfToken($_POST[CSRF_TOKEN_NAME] ?? '')) {
-        $authController->getAndSetFlashMessage('errors', ['Security token validation failed. Please try again.'], true);
-    } else {
-        if (isset($_POST['revoke_session_id'])) {
-            $sessionIdToRevoke = (int)$_POST['revoke_session_id'];
-            if ($persistentSessionManager->revokeSessionById($sessionIdToRevoke, $currentUserId)) {
-                $authController->getAndSetFlashMessage('success', 'Session revoked successfully.');
-            } else {
-                $authController->getAndSetFlashMessage('errors', ['Failed to revoke session. It might have already been revoked or does not belong to you.'], true);
-            }
-        } elseif (isset($_POST['revoke_all_other_sessions'])) {
-            $currentSeriesIdFromCookie = $_COOKIE[REMEMBER_ME_COOKIE_NAME_SERIES] ?? null;
-            $persistentSessionManager->revokeAllOtherSessions($currentUserId, $currentSeriesIdFromCookie);
-            $authController->getAndSetFlashMessage('success', 'All other active sessions revoked successfully.');
-        }
-    }
-    // Redirect to the same page to show messages and prevent re-submission
-    $authController->redirect(PAGE_ACTIVE_SESSIONS);
-}
-
-
-// Fetch active sessions for display
-$sessions = $persistentSessionManager->getUserActiveSessions($currentUserId);
-$currentSeriesHashFromCookie = null;
-if (isset($_COOKIE[REMEMBER_ME_COOKIE_NAME_SERIES])) {
-    $currentSeriesHashFromCookie = $persistentSessionManager->hashToken($_COOKIE[REMEMBER_ME_COOKIE_NAME_SERIES]);
-}
-
-// Generate CSRF token for forms if not already done by POST handling (which redirects)
+// Generate CSRF token for forms for GET requests.
+// This should be done after the include, which handles POST (and redirects)
+// and after data fetching, so the token is fresh for the displayed forms.
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    $security->generateCsrfToken();
+    $security->generateCsrfToken(); // $security object is from bootstrap.php
 }
 
 ?>
@@ -63,9 +38,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manage Active Sessions</title>
-    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="css/style.css">
+    <title>Manage Active Sessions - <?php echo $security->escapeHTML(defined('SITE_NAME') ? SITE_NAME : 'Login System'); ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="login_system/css/style.css"> <!-- Updated path -->
 </head>
 <body>
     <div class="container mt-5">
@@ -79,7 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         <?php else: ?>
             <div class="table-responsive">
                 <table class="table table-striped table-hover">
-                    <thead class="thead-dark">
+                    <thead class="table-dark">
                         <tr>
                             <th>Created At</th>
                             <th>Last Used</th>
@@ -100,9 +75,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                                 </td>
                                 <td>
                                     <?php if ($currentSeriesHashFromCookie && hash_equals($session['series_hash'], $currentSeriesHashFromCookie)): ?>
-                                        <span class="badge badge-success">Current Session</span>
+                                        <span class="badge text-bg-success">Current Session</span>
                                     <?php else: ?>
-                                        <span class="badge badge-secondary">Active</span>
+                                        <span class="badge text-bg-secondary">Active</span>
                                     <?php endif; ?>
                                 </td>
                                 <td>
@@ -133,8 +108,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         <p class="mt-3"><a href="<?php echo $authController->buildUrl(PAGE_DASHBOARD); ?>">Back to Dashboard</a></p>
     </div>
 
-    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
-    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
