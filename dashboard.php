@@ -5,14 +5,14 @@
  * This script displays the main dashboard for logged-in users.
  * It requires login and shows user-specific information and navigation.
  */
-require_once 'src/bootstrap.php'; // Defines $authController, $user, $security
+require_once 'login_system/src/bootstrap.php'; // Defines $authController, $user, $security
 
 // Require login. If not logged in, will redirect to signin.php
 $authController->requireLogin();
 
-// Get username for display
-$username = $authController->getLoggedInUsername();
-$usernameDisplay = $username ? $security->escapeHTML($username) : 'User';
+// Get username for display by including the prepare_dashboard.php script.
+// This script will set $usernameDisplay using $authController and $security.
+require_once 'login_system/includes/prepare_dashboard.php';
 
 ?>
 <!DOCTYPE html>
@@ -20,18 +20,18 @@ $usernameDisplay = $username ? $security->escapeHTML($username) : 'User';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard</title>
-    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="css/style.css">
+    <title>Dashboard - <?php echo $security->escapeHTML(defined('SITE_NAME') ? SITE_NAME : 'Login System'); ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="login_system/css/style.css">
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-light bg-light container">
         <a class="navbar-brand" href="<?php echo $authController->buildUrl(PAGE_DASHBOARD); ?>">My Application</a>
-        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
             <span class="navbar-toggler-icon"></span>
         </button>
         <div class="collapse navbar-collapse" id="navbarNav">
-            <ul class="navbar-nav ml-auto">
+            <ul class="navbar-nav ms-auto">
                 <li class="nav-item">
                     <span class="navbar-text">
                         Welcome, <?php echo $usernameDisplay; ?>!
@@ -69,8 +69,6 @@ $usernameDisplay = $username ? $security->escapeHTML($username) : 'User';
         </div>
     </div>
 
-    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
-    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

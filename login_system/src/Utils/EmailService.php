@@ -9,7 +9,7 @@ class EmailService {
 
         $message = "<p>Hello {$escapedUsername},</p>";
         $message .= "<p>Thank you for registering. Please click the link below to verify your email address:</p>";
-        $message .= "<p><a href="{$escapedVerificationLink}">{$escapedVerificationLink}</a></p>";
+        $message .= "<p><a href='{$escapedVerificationLink}'>{$escapedVerificationLink}</a></p>";
         $message .= "<p>If you did not register, please ignore this email.</p>";
 
         $headers = "MIME-Version: 1.0" . "

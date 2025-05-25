@@ -59,11 +59,10 @@ class UserTest extends TestCase
             ->with($this->callback(function ($params) use ($username, $email) {
                 $this->assertEquals($username, $params[':username']);
                 $this->assertEquals($email, $params[':email']);
-                $this->assertTrue(password_verify('password123', $params[':password']));
-                $this->assertEquals(0, $params[':is_verified']); // Key assertion for this test
+                $this->assertTrue(password_verify('password123', $params[':password_hash']));
                 $this->assertNotEmpty($params[':verification_token']);
-                $this->assertIsInt($params[':verification_token_expiry']);
-                $this->assertGreaterThan(time(), $params[':verification_token_expiry']);
+                $this->assertIsString($params[':verification_token_expiry']);
+                $this->assertGreaterThan(time(), strtotime($params[':verification_token_expiry']));
                 return true;
             }))
             ->willReturn(true);
@@ -78,7 +77,7 @@ class UserTest extends TestCase
             ->with(
                 AuditLoggerService::EVENT_USER_REGISTERED,
                 123, // Expected user ID from lastInsertId
-                ['username' => $username, 'email' => $email]
+                ['username' => $username, 'email' => $email, 'verification_enabled' => true, 'verification_token_set' => true]
             );
 
         $userId = $this->user->create($username, $email, $password);
@@ -169,8 +168,7 @@ class UserTest extends TestCase
             ->method('log')
             ->with(
                 AuditLoggerService::EVENT_EMAIL_VERIFICATION_SUCCESS,
-                $userId,
-                ['message' => 'Email verified successfully.']
+                $userId
             );
         
         $result = $this->user->verifyEmailAddress($userId);

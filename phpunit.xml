@@ -1,17 +1,17 @@
-<phpunit bootstrap="tests/bootstrap.php"
+<phpunit bootstrap="login_system/tests/bootstrap.php"
          colors="true"
          verbose="true"
          stopOnFailure="false">
     <testsuites>
         <testsuite name="App Test Suite">
-            <directory>tests</directory>
+            <directory>login_system/tests</directory>
         </testsuite>
     </testsuites>
-    <filter>
-        <whitelist processUncoveredFilesFromWhitelist="true">
-            <directory suffix=".php">src</directory>
-        </whitelist>
-    </filter>
+    <coverage processUncoveredFiles="true">
+      <include>
+        <directory suffix=".php">login_system/src</directory>
+      </include>
+    </coverage>
     <logging>
         <!-- <log type="coverage-html" target="build/coverage"/> -->
         <!-- <log type="coverage-clover" target="build/logs/clover.xml"/> -->
