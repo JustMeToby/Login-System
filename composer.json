@@ -1,0 +1,25 @@
+{
+    "name": "php-login-system/php-login-system",
+    "description": "A modular and configurable PHP login system.",
+    "type": "project",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Your Name",
+            "email": "you@example.com"
+        }
+    ],
+    "require-dev": {
+        "phpunit/phpunit": "^9.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "LoginSystem\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "LoginSystem\\Tests\\": "tests/"
+        }
+    }
+}

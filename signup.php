@@ -92,8 +92,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $newUserData = $user->findById((int)$userId);
                     if ($newUserData && !empty($newUserData['verification_token'])) {
                         $verificationLink = $authController->buildUrl(PAGE_VERIFY_EMAIL, 'token=' . urlencode($newUserData['verification_token']));
-                        $successMessage = "Registration successful! A verification link has been 'sent' to your email address. Please click the link to activate your account. <br><strong>Verification Link (for dev):</strong> <a href='" . $security->escapeHTML($verificationLink) . "'>" . $security->escapeHTML($verificationLink) . "</a>";
-                        $authController->getAndSetFlashMessage('success', $successMessage);
+                        
+                        // Ensure $email, $username, $userId, $verificationLink, $authController, $security, and $auditLogger 
+                        // are available and correctly populated in this scope.
+                        // $email and $username are from form POST data. $userId is from $user->create().
+
+                        $emailSent = \LoginSystem\Utils\EmailService::sendVerificationEmail($email, $username, $verificationLink);
+
+                        if ($emailSent) {
+                            $successMessage = "Registration successful! A verification link has been sent to your email address (" . $security->escapeHTML($email) . "). Please click the link to activate your account.";
+                            $authController->getAndSetFlashMessage('success', $successMessage);
+                            if ($auditLogger) {
+                                $auditLogger->log(
+                                    \LoginSystem\Logging\AuditLoggerService::EVENT_EMAIL_VERIFICATION_SENT, 
+                                    (int)$userId,
+                                    ['email' => $email]
+                                );
+                            }
+                        } else {
+                            $errorMessage = "Registration successful, but we encountered an issue sending your verification email. Please contact support if you don't receive it shortly.";
+                            $authController->getAndSetFlashMessage('errors', [$errorMessage], true); // true to append
+                            if ($auditLogger) {
+                                $auditLogger->log(
+                                    \LoginSystem\Logging\AuditLoggerService::EVENT_EMAIL_SEND_FAILED,
+                                    (int)$userId,
+                                    ['email' => $email, 'type' => 'verification', 'reason' => 'EmailService::sendVerificationEmail returned false']
+                                );
+                            }
+                        }
+                        // The existing redirect, like $authController->redirect(PAGE_SIGNIN);, will handle showing the flash message.
                     } else {
                         // This case should ideally not happen if User::create works as expected
                         error_log("Failed to retrieve verification token for new user ID: {$userId}");

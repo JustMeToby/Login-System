@@ -1,0 +1,20 @@
+<phpunit bootstrap="tests/bootstrap.php"
+         colors="true"
+         verbose="true"
+         stopOnFailure="false">
+    <testsuites>
+        <testsuite name="App Test Suite">
+            <directory>tests</directory>
+        </testsuite>
+    </testsuites>
+    <filter>
+        <whitelist processUncoveredFilesFromWhitelist="true">
+            <directory suffix=".php">src</directory>
+        </whitelist>
+    </filter>
+    <logging>
+        <!-- <log type="coverage-html" target="build/coverage"/> -->
+        <!-- <log type="coverage-clover" target="build/logs/clover.xml"/> -->
+        <!-- <log type="junit" target="build/logs/junit.xml"/> -->
+    </logging>
+</phpunit>
