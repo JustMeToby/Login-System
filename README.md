@@ -4,15 +4,26 @@ This project provides a secure, reusable PHP login system built with a focus on 
 
 ## Features
 
-*   **User Authentication:** Secure sign-up, sign-in, and logout functionality.
-*   **Password Management:** Secure password hashing (using `password_hash` and `password_verify`), password reset via email (simulated), and "forgot password" feature.
-*   **CSRF Protection:** Cross-Site Request Forgery protection on all forms.
-*   **Security Headers:** Common security headers (CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy) are implemented.
-*   **Admin Account:** Automatic creation of a default administrator account.
-*   **Highly Configurable:** Key settings, including page filenames/paths, are managed via a central configuration file.
-*   **Modular Design:** Core logic is encapsulated in classes (Database, Security, User, AuthController).
-*   **Custom Autoloader:** Uses a simple PSR-4 compliant autoloader for its classes, no Composer needed.
-*   **Easy Integration:** Designed to be dropped into an existing project. Frontend pages (root PHP files) can be customized, and their locations can be configured.
+*   **User Registration:** Standard username, email, and password registration.
+*   **User Login & Logout:** Secure session-based authentication for user sign-in and sign-out.
+*   **Email Verification:**
+    *   Upon registration, users are sent a verification email.
+    *   The account remains inactive (or restricted) until the user clicks the verification link in the email.
+    *   This helps ensure that the user has provided a valid and accessible email address.
+    *   Verification links have a configurable lifespan (default is 24 hours, set via `EMAIL_VERIFICATION_TOKEN_LIFESPAN_SECONDS` in `config.php`).
+*   **Password Hashing:** Passwords are securely hashed using `password_hash()` and verified with `password_verify()`.
+*   **Password Reset:** Users can request a password reset link via email if they forget their password. The link is sent to their registered email address.
+*   **Password Policies:** Enforced password complexity (e.g., minimum length, character types via `PasswordPolicyService`).
+*   **CSRF Protection:** All forms are protected against Cross-Site Request Forgery attacks using tokens.
+*   **Rate Limiting:** Login attempts and password reset requests are rate-limited to prevent abuse and brute-force attacks.
+*   **Persistent Sessions ("Remember Me"):** Users can choose to be remembered on their device for an extended period, avoiding the need to log in repeatedly. (Uses `persistent_sessions` table).
+*   **Security Headers:** Common security headers (e.g., Content Security Policy, X-Content-Type-Options, X-Frame-Options, Referrer-Policy) are implemented to enhance protection against common web vulnerabilities.
+*   **Admin Account:** Automatic creation of a default administrator account on first setup.
+*   **Audit Logging:** Key user actions (e.g., registration, login, password reset, email verification) and significant security events are logged for monitoring and review.
+*   **Highly Configurable:** Core settings (database, site URL, page paths, security parameters, email settings) are managed via `config/config.php`.
+*   **Modular Design:** Backend logic is organized into classes (e.g., `Database`, `Security`, `User`, `AuthController`, `EmailService`) within the `LoginSystem` namespace.
+*   **Custom Autoloader:** A simple PSR-4 compliant autoloader is provided in `src/bootstrap.php`, eliminating the need for Composer for this standalone system.
+*   **Easy Integration:** Designed to be relatively easy to integrate into existing PHP projects.
 
 ## Directory Structure
 
@@ -34,15 +45,17 @@ The system uses the following directory structure:
 │   ├── Database/
 │   │   └── Database.php
 │   ├── Utils/
+│   │   ├── EmailService.php
 │   │   └── Security.php
-│   └── bootstrap.php       # Initializes the application, autoloads classes
-├── signin.php              # Default sign-in page (configurable)
-├── signup.php              # Default sign-up page (configurable)
-├── dashboard.php           # Default user dashboard page (configurable)
-├── logout.php              # Default logout script (configurable)
-├── forgot_password.php     # Default forgot password page (configurable)
-├── reset_password.php      # Default reset password page (configurable)
-├── index.php               # Default entry point (configurable)
+│   └── bootstrap.php       # Initializes the application, autoloads classes, sets up services
+├── signin.php              # Default sign-in page (configurable via config.php)
+├── signup.php              # Default sign-up page (configurable via config.php)
+├── dashboard.php           # Default user dashboard page (configurable via config.php)
+├── logout.php              # Default logout script (configurable via config.php)
+├── forgot_password.php     # Default forgot password page (configurable via config.php)
+├── reset_password.php      # Default reset password page (configurable via config.php)
+├── verify_email.php        # Page to handle email verification links
+├── index.php               # Default entry point (configurable via config.php)
 └── README.md               # This file
 ```
 
@@ -51,27 +64,33 @@ The system uses the following directory structure:
 *   PHP 7.2 or higher (recommended 7.4+)
 *   PDO extension enabled (for SQLite or other database interaction)
 *   SQLite3 extension enabled (if using default SQLite database)
-    *   If using another database (e.g., MySQL), you'll need to adjust the DSN in `config/config.php` and potentially the SQL in `config/schema.sql`.
+    *   If using another database (e.g., MySQL), you'll need to adjust the DSN in `config/config.php` and potentially the SQL in `config/schema.sql` and `Database.php`.
+    *   A functional mail server or mail service configured for PHP's `mail()` function is required for email sending features (email verification, password reset).
 
 ## Installation & Setup
 
 1.  **Download/Clone:**
-    *   Place all the files and folders (maintaining the structure) into your project directory (e.g., `/loginsystem` or directly into your project's auth-related folder).
+    *   Place all files and folders, maintaining the directory structure, into your project (e.g., `/loginsystem` or a subdirectory).
 
-2.  **Configure `config/config.php`:**
-    *   Open `config/config.php` and carefully review and update the settings:
-        *   `DB_PATH`: Path to your SQLite database file (e.g., `db/users.sqlite`). Ensure the `db/` directory is writable by your web server if SQLite is to create the file.
-        *   `USER_TABLE_NAME`: Name of the users table (default is `users`).
-        *   **`BASE_URL`**: This is crucial. Set it to the correct base URL of your application where this login system resides.
-            *   If your project is at the web root (e.g., `http://localhost/`), `BASE_URL` can be an empty string `''` or `/`.
-            *   If your project is in a subdirectory (e.g., `http://localhost/myproject/`), `BASE_URL` should be `/myproject`.
+2.  **Configure `config/config.php`:** This is the most critical step.
+    *   Open `config/config.php` and carefully review and update all settings, especially:
+        *   `DB_CONNECTION_STRING` (formerly `DB_PATH` for SQLite): Update the DSN for your database. For SQLite, ensure the path to the database file (e.g., `db/users.sqlite`) is correct and the `db/` directory is writable by your web server.
+        *   `DB_USERNAME`, `DB_PASSWORD`: For databases like MySQL/PostgreSQL.
+        *   **`BASE_URL`**: Crucial for correct link generation. Set it to the base URL where the login system is accessible.
+            *   Example: If project is at `http://localhost/`, `BASE_URL` can be `''` or `/`.
+            *   Example: If project is at `http://localhost/myapp/auth/`, `BASE_URL` should be `/myapp/auth`.
             *   **Do not include a trailing slash.**
-        *   **Page Path Constants (`PAGE_SIGNIN`, `PAGE_DASHBOARD`, etc.)**:
-            *   These constants define the filenames or paths (relative to `BASE_URL`) for key application pages.
-            *   The defaults are standard filenames like `signin.php`. You can change these if your project uses different filenames or places these pages in subdirectories (e.g., `auth/login.php`).
-            *   Example: If your sign-in page is `http://localhost/myapp/user/login.php` and `BASE_URL` is `/myapp`, then `PAGE_SIGNIN` should be `'user/login.php'`.
-        *   `ADMIN_USERNAME` & `ADMIN_PASSWORD`: Credentials for the default admin account. The password will be hashed upon first run if the admin account doesn't exist.
-        *   Other constants like `CSRF_TOKEN_NAME`, session keys, and `APP_NAMESPACE_PREFIX` can usually be left at their defaults.
+        *   **Page Path Constants (`PAGE_SIGNIN`, `PAGE_DASHBOARD`, etc.)**: Define filenames or paths (relative to `BASE_URL`) for key pages. Adapt if you rename or move files like `signin.php`.
+        *   `ADMIN_USERNAME`, `ADMIN_PASSWORD`: For the default admin account.
+        *   `EMAIL_VERIFICATION_ENABLED`: Set to `true` to enable email verification.
+        *   `EMAIL_FROM`: The "From" address for emails sent by the system.
+        *   `EMAIL_VERIFICATION_TOKEN_LIFESPAN_SECONDS`, `PASSWORD_RESET_TOKEN_LIFESPAN_SECONDS`: Lifespan of tokens.
+        *   Review other security and feature-related constants.
+
+3.  **Database Setup:**
+    *   The system attempts to create the users table and other necessary tables (like `login_attempts`, `persistent_sessions`, `password_resets`, `audit_logs`) automatically using `config/schema.sql` if they don't exist. This happens when `Database::getConnection()` is first called (typically in `src/bootstrap.php`).
+    *   Ensure the database user has privileges to create tables, or create them manually by executing the SQL in `config/schema.sql` (adapt SQL for your specific database system if not SQLite).
+    *   For SQLite, ensure the directory containing the database file (e.g., `db/`) is writable by the web server.
 
 3.  **Database Setup:**
     *   The system will attempt to create the users table automatically using the `config/schema.sql` file if it doesn't exist when the `Database::getConnection()` method is first called (typically when `src/bootstrap.php` runs).
@@ -102,11 +121,11 @@ The system uses the following directory structure:
     *   Includes logic to automatically create the database schema from `config/schema.sql` if the user table doesn't exist.
 
 *   **`src/Utils/Security.php` (`LoginSystem\Utils\Security`)**:
-    *   Provides security-related utility functions.
-
+    *   Provides security-related utility functions (CSRF, escaping, headers).
+*   **`src/Utils/EmailService.php` (`LoginSystem\Utils\EmailService`)**:
+    *   Handles sending emails (e.g., verification, password reset) using PHP's `mail()` function.
 *   **`src/Auth/User.php` (`LoginSystem\Auth\User`)**:
-    *   Handles all user-specific database operations.
-
+    *   Manages user data, registration, verification, password operations, and interactions with the users table.
 *   **`src/Auth/AuthController.php` (`LoginSystem\Auth\AuthController`)**:
     *   Manages the authentication flow, user state, and redirects.
     *   Uses the `PAGE_` constants from `config.php` to determine redirect paths.
@@ -123,18 +142,27 @@ They can be customized to match your project's look and feel. If you change thei
 
 ## Security Features Implemented
 
-*   **Password Hashing:** Uses `password_hash()` and `password_verify()`.
-*   **CSRF Protection:** On all forms.
-*   **HTTP Security Headers:** CSP, X-Content-Type-Options, etc.
-*   **Session Management:** Secure session practices.
-*   **Input Sanitization & Prepared Statements.**
+*   **Password Hashing:** Uses `password_hash()` and `password_verify()` for strong password storage.
+*   **CSRF Protection:** Implemented on all state-changing forms.
+*   **HTTP Security Headers:** Includes Content Security Policy (CSP), X-Content-Type-Options, X-Frame-Options, and Referrer-Policy.
+*   **Session Management:** Secure session handling practices.
+*   **Input Validation & Sanitization:** Applied to user inputs.
+*   **Prepared Statements:** Used for all database queries to prevent SQL injection.
+*   **Rate Limiting:** For login and password reset attempts.
+*   **Email Verification:** Confirms user email ownership.
+*   **Audit Trails:** Logs important system and user events.
 
 ## Customization
 
-*   **Styling & HTML Structure:** Modify CSS and the root PHP files.
-*   **Page Locations:** Change `PAGE_` constants in `config.php` and move the corresponding files.
-*   **Database:** Adapt `config.php` (DSN, credentials - requiring `Database.php` modification) and `config/schema.sql`.
-*   **Email Sending:** Integrate an email library in `forgot_password.php` for the reset link.
+*   **Styling & HTML Structure:** Modify CSS (`css/style.css`) and the HTML in the root PHP files (e.g., `signin.php`, `signup.php`).
+*   **Page Locations & Filenames:** Change `PAGE_` constants in `config/config.php` and move/rename the corresponding PHP files.
+*   **Database:**
+    *   Adapt `config/config.php` for your database DSN and credentials.
+    *   Modify `config/schema.sql` if you need different table structures or are using a non-SQLite database (syntax adjustments may be needed).
+    *   The `Database.php` class may need minor adjustments for different SQL dialects if features beyond basic PDO are used.
+*   **Email Sending:** The default `EmailService.php` uses PHP's `mail()`. For more robust email delivery, you might replace its implementation with a library like PHPMailer or SwiftMailer, or use an API-based email service.
+*   **Password Policies:** Adjust parameters in `PasswordPolicyService.php` or extend it.
+*   **Logging:** The `AuditLoggerService.php` can be extended to log to different targets or change log formats.
 
 ## Troubleshooting
 
